@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 workflowy-import-md = "workflowy_importer.cli:main"
+workflowy-import-smoke = "workflowy_importer.smoke:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
