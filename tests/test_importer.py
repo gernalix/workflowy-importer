@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from workflowy_importer.cli import _load_state, _reconcile_pending_replace, _save_state, build_parser
 from workflowy_importer.markdown import LinkResolver, build_tree, count_links, render_inline
 
 
@@ -98,6 +99,71 @@ class ImporterTests(unittest.TestCase):
             names = [node.name for node in parsed.root.walk()]
             self.assertIn("Front matter", names)
             self.assertIn("tags: [a, b]", names)
+
+
+class FakeClient:
+    def __init__(self, existing: set[str]):
+        self.existing = set(existing)
+        self.deleted: list[str] = []
+
+    def node_exists(self, node_id: str) -> bool:
+        return node_id in self.existing
+
+    def delete_node(self, node_id: str) -> None:
+        if node_id not in self.existing:
+            raise AssertionError(f"missing node {node_id}")
+        self.existing.remove(node_id)
+        self.deleted.append(node_id)
+
+
+class StateRecoveryTests(unittest.TestCase):
+    def test_cli_module_and_defaults_load(self) -> None:
+        args = build_parser().parse_args(["notes"])
+        self.assertEqual(args.parent, "None")
+        self.assertFalse(args.replace)
+        self.assertFalse(args.no_resolve_links)
+
+    def test_pending_replace_finishes_by_deleting_old_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            rollback = {"root_id": "old", "fingerprint": "old-fingerprint"}
+            state = {
+                "root_id": "new",
+                "fingerprint": "new-fingerprint",
+                "pending_replace": {
+                    "old_root_id": "old",
+                    "rollback_state": rollback,
+                },
+            }
+            _save_state(state_path, state)
+            client = FakeClient({"new", "old"})
+
+            final = _reconcile_pending_replace(client, state_path, state)
+
+            self.assertEqual(client.deleted, ["old"])
+            self.assertNotIn("pending_replace", final)
+            self.assertNotIn("pending_replace", _load_state(state_path))
+
+    def test_pending_replace_rolls_state_back_if_new_root_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            rollback = {"root_id": "old", "fingerprint": "old-fingerprint"}
+            state = {
+                "root_id": "new",
+                "fingerprint": "new-fingerprint",
+                "pending_replace": {
+                    "old_root_id": "old",
+                    "rollback_state": rollback,
+                },
+            }
+            _save_state(state_path, state)
+            client = FakeClient({"old"})
+
+            final = _reconcile_pending_replace(client, state_path, state)
+
+            self.assertEqual(final, rollback)
+            self.assertEqual(_load_state(state_path), rollback)
+            self.assertEqual(client.deleted, [])
 
 
 if __name__ == "__main__":
