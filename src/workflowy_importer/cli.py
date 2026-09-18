@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from typing import Callable
 
 from .api import WorkflowyAPIError, WorkflowyClient
 from .markdown import LinkResolver, build_tree, count_links, preview_tree, render_inline
@@ -46,6 +47,21 @@ def _save_state(path: Path, value: dict) -> None:
             pass
 
 
+def _remove_state(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _restore_state(path: Path, rollback_state: object) -> dict | None:
+    if isinstance(rollback_state, dict):
+        _save_state(path, rollback_state)
+        return rollback_state
+    _remove_state(path)
+    return None
+
+
 def _create_subtree(
     client: WorkflowyClient,
     node: ImportNode,
@@ -71,12 +87,16 @@ def _import(
     parent: str,
     resolver: LinkResolver,
     resolve_links: bool,
+    on_root_created: Callable[[str], None] | None = None,
 ) -> tuple[str, dict[str, str], int]:
     ids: dict[str, str] = {}
     initial_html: dict[str, str] = {}
 
     root_html = render_inline(root.name)
     root_id = client.create_node(parent, root_html, "bullets")
+    if on_root_created:
+        on_root_created(root_id)
+
     ids[root.key] = root_id
     initial_html[root.key] = root_html
 
@@ -99,7 +119,7 @@ def _import(
     return root_id, ids, updates
 
 
-def _reconcile_pending_replace(
+def _reconcile_pending_state(
     client: WorkflowyClient,
     state_path: Path,
     state: dict | None,
@@ -107,30 +127,41 @@ def _reconcile_pending_replace(
     if not state:
         return state
 
-    pending = state.get("pending_replace")
-    if not isinstance(pending, dict):
+    pending_build = state.get("pending_build")
+    if isinstance(pending_build, dict):
+        partial_root = pending_build.get("root_id")
+        rollback_state = pending_build.get("rollback_state")
+
+        if partial_root and client.node_exists(str(partial_root)):
+            client.delete_node(str(partial_root))
+            if client.node_exists(str(partial_root)):
+                raise RuntimeError(
+                    f"Could not remove interrupted import root {partial_root}"
+                )
+
+        return _restore_state(state_path, rollback_state)
+
+    pending_replace = state.get("pending_replace")
+    if not isinstance(pending_replace, dict):
         return state
 
     new_root = state.get("root_id")
-    old_root = pending.get("old_root_id")
-    rollback_state = pending.get("rollback_state")
+    old_root = pending_replace.get("old_root_id")
+    rollback_state = pending_replace.get("rollback_state")
 
     if new_root and client.node_exists(str(new_root)):
         if old_root and client.node_exists(str(old_root)):
             client.delete_node(str(old_root))
+            if client.node_exists(str(old_root)):
+                raise RuntimeError(
+                    f"Could not finish replacement cleanup for old root {old_root}"
+                )
         final_state = dict(state)
         final_state.pop("pending_replace", None)
         _save_state(state_path, final_state)
         return final_state
 
-    if isinstance(rollback_state, dict):
-        _save_state(state_path, rollback_state)
-        return rollback_state
-
-    raise RuntimeError(
-        f"Cannot reconcile interrupted --replace recorded in {state_path}; "
-        "new import is missing and rollback metadata is unavailable."
-    )
+    return _restore_state(state_path, rollback_state)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -219,7 +250,7 @@ def run(args: argparse.Namespace) -> int:
     source_key = str(source)
 
     with WorkflowyClient(api_key=api_key, base_url=args.base_url) as client:
-        previous = _reconcile_pending_replace(client, state_path, previous)
+        previous = _reconcile_pending_state(client, state_path, previous)
 
         config_matches = bool(
             previous
@@ -260,14 +291,30 @@ def run(args: argparse.Namespace) -> int:
             else None
         )
 
+        def track_root(root_id: str) -> None:
+            nonlocal new_root_id
+            new_root_id = root_id
+            _save_state(
+                state_path,
+                {
+                    "format_version": 1,
+                    "pending_build": {
+                        "root_id": root_id,
+                        "rollback_state": previous,
+                    },
+                },
+            )
+
         try:
-            new_root_id, ids, updates = _import(
+            imported_root_id, ids, updates = _import(
                 client=client,
                 root=parsed.root,
                 parent=args.parent,
                 resolver=resolver,
                 resolve_links=resolve_links,
+                on_root_created=track_root,
             )
+            new_root_id = imported_root_id
 
             final_state = {
                 "format_version": 1,
@@ -288,42 +335,37 @@ def run(args: argparse.Namespace) -> int:
                 }
                 _save_state(state_path, staged_state)
 
-                try:
-                    client.delete_node(old_root_id)
-                except Exception:
-                    try:
-                        client.delete_node(new_root_id)
-                        new_root_id = None
-                        if previous is not None:
-                            _save_state(state_path, previous)
-                    finally:
-                        pass
-                    raise
+                client.delete_node(old_root_id)
+                if client.node_exists(old_root_id):
+                    raise RuntimeError(
+                        f"Old tracked root still exists after replacement: {old_root_id}"
+                    )
 
             _save_state(state_path, final_state)
 
         except Exception:
-            if new_root_id:
-                try:
-                    current_state = _load_state(state_path)
-                    pending = (
-                        current_state.get("pending_replace")
-                        if isinstance(current_state, dict)
-                        else None
+            try:
+                current_state = _load_state(state_path)
+                if isinstance(current_state, dict) and isinstance(
+                    current_state.get("pending_build"), dict
+                ):
+                    _reconcile_pending_state(client, state_path, current_state)
+                elif (
+                    new_root_id
+                    and not (
+                        isinstance(current_state, dict)
+                        and isinstance(current_state.get("pending_replace"), dict)
                     )
-                    old_was_deleted = bool(
-                        isinstance(pending, dict)
-                        and pending.get("old_root_id")
-                        and not client.node_exists(str(pending["old_root_id"]))
-                    )
-                    if not old_was_deleted:
+                ):
+                    if client.node_exists(new_root_id):
                         client.delete_node(new_root_id)
-                except Exception as cleanup_exc:
-                    print(
-                        f"WARNING: cleanup/recovery needs attention for {new_root_id}: "
-                        f"{cleanup_exc}",
-                        file=sys.stderr,
-                    )
+                    _restore_state(state_path, previous)
+            except Exception as cleanup_exc:
+                print(
+                    "WARNING: cleanup/recovery remains pending; "
+                    f"rerun the importer to reconcile it: {cleanup_exc}",
+                    file=sys.stderr,
+                )
             raise
 
     print(
