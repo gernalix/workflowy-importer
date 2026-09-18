@@ -1,19 +1,10 @@
 # workflowy-importer
 
-Import a Markdown file or a whole Markdown directory tree into Workflowy using the official Workflowy API.
+A small, safety-first toolkit around the official Workflowy API.
 
-The importer creates one container node and reconstructs folders, files, headings, lists, tasks, quotes and fenced code. It can also turn Obsidian/Logseq-style `[[wikilinks]]` and local Markdown links into real Workflowy links after all destination node IDs are known.
+It started as a Markdown importer and now also provides a local automation layer (`wf`) for backup/cache, quick capture, mirrors, routing, ChatGPT capture, external-event ingestion, PersonalHub deep links, reviews and other workflows.
 
-## Safety model
-
-- **Dry-run first:** `--dry-run` needs no API key and performs no writes.
-- **One tracked root:** each import is stored under one Workflowy root node.
-- **Idempotent by default:** a state file stores only source/config hashes and Workflowy node IDs, never the API key.
-- **No accidental duplicate refresh:** if the source changed, a normal rerun stops and tells you to use `--replace`.
-- **Transactional replace:** a replacement is built completely first. The old tracked root is deleted only after the new import succeeds; if that deletion fails, the new root is removed.
-- **Partial-import cleanup:** the root ID is journaled immediately after creation, so a later rerun can clean an interrupted initial import or replacement before doing new work.
-- **No unsafe mutation retries:** automatic retries are limited to read-only API calls; node creation/update/delete are never replayed blindly after an ambiguous network failure.
-- **Ambiguous links are not guessed:** unresolved or ambiguous `[[links]]` stay literal.
+See [AUTOMATIONS.md](AUTOMATIONS.md) for the map of the 30 automation ideas.
 
 ## Install
 
@@ -27,37 +18,48 @@ source .venv/bin/activate
 python -m pip install -e .
 ```
 
-Get an API key from Workflowy and expose it only as an environment variable:
+## API key
 
-```bash
-export WORKFLOWY_API_KEY='...'
+The canonical location is:
+
+```text
+~/.config/codex/secrets/workflowy-api-key
 ```
 
-Do not commit the key.
+It must be a regular, non-symlink file owned by the current user with permissions exactly `0600`.
 
-## Dry-run
+Example setup:
+
+```bash
+mkdir -p ~/.config/codex/secrets
+chmod 700 ~/.config/codex/secrets
+printf '%s' 'PASTE_KEY_HERE' > ~/.config/codex/secrets/workflowy-api-key
+chmod 600 ~/.config/codex/secrets/workflowy-api-key
+```
+
+The programs never print or persist the key. If the canonical file is absent, an already-set `WORKFLOWY_API_KEY` environment variable is accepted as a fallback. If the file exists but is insecure, execution fails closed instead of falling back.
+
+## Markdown importer
+
+Dry-run:
 
 ```bash
 workflowy-import-md ~/Documents/my-vault --dry-run
 ```
 
-This prints counts plus a capped tree preview, including how many internal links can or cannot be resolved.
-
-## Import
-
-Create one top-level container:
+Import:
 
 ```bash
 workflowy-import-md ~/Documents/my-vault
 ```
 
-Import under the Workflowy Inbox:
+Import below Inbox:
 
 ```bash
 workflowy-import-md ~/Documents/my-vault --parent inbox
 ```
 
-Import under a specific Workflowy node, URL or custom shortcut:
+Import below a Workflowy node URL or custom shortcut:
 
 ```bash
 workflowy-import-md ~/Documents/my-vault \
@@ -65,27 +67,20 @@ workflowy-import-md ~/Documents/my-vault \
   --root-name 'Imported knowledge'
 ```
 
-Workflowy's API accepts full node IDs, 12-character IDs, Workflowy node URLs and configured shortcut targets as parent destinations.
+### Import safety
 
-## Refresh after Markdown changes
+- Dry-run needs no key and performs no writes.
+- One tracked root is created per import.
+- Re-running unchanged input is a no-op.
+- If source content changed, a normal rerun stops rather than duplicating data.
+- `--replace` builds the new tree completely before deleting the previously tracked root.
+- Interrupted initial/replacement imports are journaled and reconciled on the next run.
+- Read-only API calls may retry transient errors; mutations are not blindly replayed after ambiguous network failures.
+- Ambiguous internal links are never guessed.
 
-A rerun with exactly the same source/config is a no-op if the tracked Workflowy root still exists.
+The importer intentionally uses transactional whole-root replacement rather than risky in-place mutation. Machine-side incremental behavior is provided by the cache/event bridge; Markdown source refresh remains explicit with `--replace`.
 
-When source content changes:
-
-```bash
-workflowy-import-md ~/Documents/my-vault --replace
-```
-
-`--replace` only targets the prior root ID recorded by this importer's state file. The state file defaults to:
-
-```text
-<directory>/.workflowy-importer-state.json
-```
-
-For a single file it is stored beside the file as `.<stem>.workflowy-importer-state.json`. Override it with `--state-file`.
-
-## Markdown mapping
+### Markdown mapping
 
 | Markdown/source | Workflowy result |
 | --- | --- |
@@ -93,37 +88,218 @@ For a single file it is stored beside the file as `.<stem>.workflowy-importer-st
 | `file.md` | file-name bullet |
 | `# H1` | H1 node |
 | `## H2` | H2 node |
-| `### H3` and deeper | H3 node, hierarchy still follows source level |
+| deeper headings | H3 node while preserving hierarchy |
 | `- item` | bullet |
-| numbered item | bullet preserving its numeric marker |
+| numbered item | bullet preserving numeric marker |
 | `- [ ]` / `- [x]` | open/completed todo |
 | `> quote` | quote block |
-| fenced code | `Code` parent with one code-block child per source line |
+| fenced code | `Code` parent plus code-block children |
 | bold/italic/strike/inline code | Workflowy-supported inline HTML |
 | external Markdown link | hyperlink |
 | `[[Page]]`, `[[Page#Heading]]`, `[[Page|label]]` | Workflowy node hyperlink when uniquely resolvable |
 | `[label](page.md#Heading)` | Workflowy node hyperlink when uniquely resolvable |
-| YAML front matter | preserved under a `Front matter` node |
+| YAML front matter | preserved below a `Front matter` node |
 
-The two-pass link phase is deliberate: first all nodes are created and their Workflowy IDs are collected; then internal links are updated to point at those IDs.
+Images/attachments are not uploaded: the public Workflowy API currently exposes node operations, not a binary-upload endpoint. Markdown image syntax is preserved as text.
 
-## Known limitations
+## `wf`: the simple local interface
 
-- Images and attachments are **not uploaded**. Markdown image syntax is preserved as text.
-- Ambiguous duplicate page names are never auto-selected; path-qualified links such as `[[folder/Page]]` are safer.
-- Markdown tables and uncommon extensions are preserved as ordinary text rather than recreated as special Workflowy structures.
-- Fenced multi-line code is represented as a `Code` parent plus code-block children so no line is lost to Workflowy's multi-line node semantics.
-- This is an importer, not a bidirectional sync engine. `--replace` rebuilds the tracked import rather than attempting an in-place diff.
+Think of `wf` as a remote control for Workflowy. A human, a shell script, Codex or another local service can all use the same commands instead of each reimplementing API access.
+
+Examples:
+
+```bash
+# Put one thought in Inbox
+wf inbox "idea da sistemare"
+
+# Put a task directly in Today
+wf today "Controllare PersonalHub"
+
+# Create below a shortcut/node
+wf add "Bug: Places riapre Home" --parent ph
+
+# Search the machine cache
+wf sync
+wf find "PersonalHub"
+
+# Generate/print the deep link for a node
+wf url NODE_ID
+
+# Complete, move or mirror a node
+wf done NODE_ID
+wf move NODE_ID today
+wf mirror NODE_ID today
+
+# Full backup
+wf backup ~/Documents/Workflowy/backups/manual.json
+wf backup ~/Documents/Workflowy/backups/manual.md --format md
+```
+
+The native Workflowy search remains the right tool for normal human searching. The SQLite cache exists for programs: deduplication, history/diffs, joins with PersonalHub, offline processing and avoiding repeated full API reads.
+
+## Automatic classification
+
+Copy `rules.example.json` to:
+
+```text
+~/.config/workflowy-bridge/rules.json
+```
+
+Then:
+
+```bash
+wf route "Bug PersonalHub: Places riapre Home"
+```
+
+Rules are deliberately conservative:
+
+1. explicit deterministic rules are checked first;
+2. an optional external classifier may handle unmatched items;
+3. classifier output is accepted only above the configured confidence threshold;
+4. otherwise the item stays in Inbox.
+
+So an ambiguous note is not silently filed in the wrong project.
+
+## ChatGPT → Workflowy
+
+### One conversation from an account export
+
+```bash
+wf chatgpt conversations.json \
+  --conversation-id CONVERSATION_ID \
+  --parent inbox
+```
+
+This selects one conversation from the normal ChatGPT account export instead of importing the entire archive.
+
+### The currently open browser chat
+
+Run:
+
+```bash
+wf serve
+```
+
+Then load `browser-extension/` as an unpacked Chromium extension and click its action while the desired ChatGPT conversation is open.
+
+The extension only reads that open conversation and posts it to `127.0.0.1`. It never receives the Workflowy API key; the local bridge performs the authenticated write.
+
+The account-export route remains the stable fallback if ChatGPT changes its web DOM.
+
+## PersonalHub deep links
+
+Workflowy node IDs can be converted to stable Workflowy URLs. The tool can therefore enrich a selected table/column of a local PersonalHub SQLite database.
+
+Always preview first:
+
+```bash
+wf sync
+wf personalhub-links ~/path/to/personalhub.db \
+  --table TABLE \
+  --name-column NAME_COLUMN \
+  --url-column workflowy_url
+```
+
+Only exact case-insensitive names that correspond to exactly one Workflowy node are considered. Ambiguous matches are skipped.
+
+Apply only after inspecting the count:
+
+```bash
+wf personalhub-links ~/path/to/personalhub.db \
+  --table TABLE \
+  --name-column NAME_COLUMN \
+  --url-column workflowy_url \
+  --apply
+```
+
+Use `--create-column` only when you intentionally want the program to add that column.
+
+## External systems
+
+A common JSON-event adapter is available for:
+
+```bash
+wf ingest github event.json
+wf ingest activitywatch event.json
+wf ingest personalhub event.json
+wf ingest calendar event.json
+wf ingest gmail event.json
+wf ingest generic event.json
+```
+
+Events are recorded in the local cache with an external ID/hash so repeated ingestion can be detected. Routing decides where a useful event belongs in Workflowy.
+
+This keeps GitHub, ActivityWatch, PersonalHub, Calendar and mail selection logic outside the Workflowy client while giving them one common destination interface.
+
+## Reviews, resurfacing and cleanup
+
+```bash
+# Weekly summary
+wf weekly-review --days 7 --parent today
+
+# Mirror a few old/open notes back into view
+wf resurface --older-than-days 180 --limit 3 --parent today
+
+# Find likely duplicate titles; report only
+wf dedupe
+
+# Preview explicit normalization rules
+wf normalize --rules ~/.config/workflowy-bridge/rules.json
+
+# Apply them only when intentionally requested
+wf normalize --rules ~/.config/workflowy-bridge/rules.json --apply
+
+# Preview old completed items eligible for archive
+wf archive-completed --older-than-days 90 --archive-target archive
+
+# Actually move them
+wf archive-completed --older-than-days 90 --archive-target archive --apply
+```
+
+No bulk duplicate merge is attempted automatically.
+
+## Project index
+
+```bash
+wf projects --root ~/projects --parent inbox
+```
+
+Workflowy does not provide reliable portable local-file links, so local paths are recorded as plain text. Git remotes are recorded when available.
+
+## Workflowy as an automation control panel
+
+`wf control` can inspect a chosen Workflowy node for children named:
+
+```text
+RUN: action-name
+```
+
+Only action names explicitly mapped to argv arrays in the local config may execute. There is no shell evaluation. Unknown actions remain untouched; successful actions are completed and receive a capped output child.
+
+This provides a human-in-the-loop control surface without turning arbitrary Workflowy text into executable commands.
+
+## Readwise / Reader
+
+No custom bridge is needed for the normal Readwise use case: Readwise already provides a native Workflowy export/integration. Use that rather than duplicating highlight synchronization in this project.
+
+## Optional Fedora automation
+
+Templates live in `deploy/systemd/` for:
+
+- localhost capture bridge;
+- periodic cache refresh;
+- daily JSON backup;
+- weekly review.
+
+They are repository templates only until explicitly installed/enabled on the Fedora account.
 
 ## Live smoke test
-
-After configuring `WORKFLOWY_API_KEY`, one command can exercise the real API with disposable data:
 
 ```bash
 workflowy-import-smoke
 ```
 
-The smoke test creates a uniquely named temporary root under the Workflowy Inbox, verifies import, completed todos, converted internal links, idempotent rerun, the `--replace` guard and replacement, then deletes every root it tracked in a `finally` cleanup path. It never imports your real Markdown files.
+It creates disposable Workflowy data, verifies import, completed todos, internal links, no-op rerun, the replacement guard and replacement, and cleans up tracked smoke roots.
 
 ## Tests
 
@@ -131,4 +307,4 @@ The smoke test creates a uniquely named temporary root under the Workflowy Inbox
 python -m unittest discover -s tests -v
 ```
 
-CI runs the same suite on Python 3.11 and 3.13.
+CI runs the suite on Python 3.11 and 3.13.
