@@ -2,6 +2,16 @@
 
 `workflowy-importer` is also a small local automation bridge. The goal is one trusted layer around the Workflowy API instead of many scripts that each handle credentials, node IDs, retries and deduplication differently.
 
+## Deployment decision
+
+Use one canonical runtime: the ThinkPad/Fedora workstation.
+
+- Workflowy API key, SQLite cache, bridge, routing and timers live on the ThinkPad.
+- Do not duplicate this stack on the Oracle VM and do not add an SSH tunnel merely to keep it online 24/7.
+- Browser capture, ActivityWatch, PersonalHub data, local Markdown and `~/projects` are already workstation-local, so colocating the automation layer removes unnecessary network/state synchronization.
+- The systemd timers are persistent: missed scheduled runs can be recovered after the ThinkPad starts again.
+- Reconsider the Oracle VM only if a future Workflowy workflow demonstrably needs to execute while the ThinkPad is off.
+
 ## Safety defaults
 
 - API key: `~/.config/codex/secrets/workflowy-api-key`, regular file, owned by the current user, mode `0600`.
