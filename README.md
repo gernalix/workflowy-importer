@@ -282,6 +282,16 @@ This provides a human-in-the-loop control surface without turning arbitrary Work
 
 No custom bridge is needed for the normal Readwise use case: Readwise already provides a native Workflowy export/integration. Use that rather than duplicating highlight synchronization in this project.
 
+## Runtime architecture
+
+The canonical runtime is the ThinkPad/Fedora workstation, not the Oracle VM.
+
+This is intentional: the workflows in this repository are primarily used while the workstation is already active (browser/ChatGPT capture, PersonalHub data, ActivityWatch, local Markdown and `~/projects`). Keeping the Workflowy bridge, API key, cache and timers on the same machine avoids a second deployment, SSH tunnels, duplicated configuration and cross-machine failure modes.
+
+The Oracle VM is not part of the Workflowy architecture unless a future workflow has a concrete requirement to run independently while the ThinkPad is off.
+
+Missed scheduled work does not require a 24/7 host: the provided systemd timers use `Persistent=true`, so a backup or weekly review missed while the ThinkPad is powered off can run after the machine becomes available again.
+
 ## Optional Fedora automation
 
 Templates live in `deploy/systemd/` for:
