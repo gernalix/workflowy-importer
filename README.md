@@ -11,7 +11,8 @@ The importer creates one container node and reconstructs folders, files, heading
 - **Idempotent by default:** a state file stores only source/config hashes and Workflowy node IDs, never the API key.
 - **No accidental duplicate refresh:** if the source changed, a normal rerun stops and tells you to use `--replace`.
 - **Transactional replace:** a replacement is built completely first. The old tracked root is deleted only after the new import succeeds; if that deletion fails, the new root is removed.
-- **Partial-import cleanup:** if creation fails, the importer attempts to delete the new partial root.
+- **Partial-import cleanup:** the root ID is journaled immediately after creation, so a later rerun can clean an interrupted initial import or replacement before doing new work.
+- **No unsafe mutation retries:** automatic retries are limited to read-only API calls; node creation/update/delete are never replayed blindly after an ambiguous network failure.
 - **Ambiguous links are not guessed:** unresolved or ambiguous `[[links]]` stay literal.
 
 ## Install
@@ -113,6 +114,16 @@ The two-pass link phase is deliberate: first all nodes are created and their Wor
 - Markdown tables and uncommon extensions are preserved as ordinary text rather than recreated as special Workflowy structures.
 - Fenced multi-line code is represented as a `Code` parent plus code-block children so no line is lost to Workflowy's multi-line node semantics.
 - This is an importer, not a bidirectional sync engine. `--replace` rebuilds the tracked import rather than attempting an in-place diff.
+
+## Live smoke test
+
+After configuring `WORKFLOWY_API_KEY`, one command can exercise the real API with disposable data:
+
+```bash
+workflowy-import-smoke
+```
+
+The smoke test creates a uniquely named temporary root under the Workflowy Inbox, verifies import, completed todos, converted internal links, idempotent rerun, the `--replace` guard and replacement, then deletes every root it tracked in a `finally` cleanup path. It never imports your real Markdown files.
 
 ## Tests
 
