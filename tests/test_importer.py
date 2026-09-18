@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+
+import httpx
 from pathlib import Path
 
-from workflowy_importer.cli import _load_state, _reconcile_pending_replace, _save_state, build_parser
+from workflowy_importer.api import WorkflowyAPIError, WorkflowyClient
+from workflowy_importer.cli import _load_state, _reconcile_pending_state, _save_state, build_parser
 from workflowy_importer.markdown import LinkResolver, build_tree, count_links, render_inline
 
 
@@ -138,7 +141,7 @@ class StateRecoveryTests(unittest.TestCase):
             _save_state(state_path, state)
             client = FakeClient({"new", "old"})
 
-            final = _reconcile_pending_replace(client, state_path, state)
+            final = _reconcile_pending_state(client, state_path, state)
 
             self.assertEqual(client.deleted, ["old"])
             self.assertNotIn("pending_replace", final)
@@ -159,11 +162,102 @@ class StateRecoveryTests(unittest.TestCase):
             _save_state(state_path, state)
             client = FakeClient({"old"})
 
-            final = _reconcile_pending_replace(client, state_path, state)
+            final = _reconcile_pending_state(client, state_path, state)
 
             self.assertEqual(final, rollback)
             self.assertEqual(_load_state(state_path), rollback)
             self.assertEqual(client.deleted, [])
+
+
+    def test_pending_build_deletes_partial_root_and_restores_previous_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            rollback = {"root_id": "old", "fingerprint": "old-fingerprint"}
+            state = {
+                "format_version": 1,
+                "pending_build": {
+                    "root_id": "partial",
+                    "rollback_state": rollback,
+                },
+            }
+            _save_state(state_path, state)
+            client = FakeClient({"old", "partial"})
+
+            final = _reconcile_pending_state(client, state_path, state)
+
+            self.assertEqual(client.deleted, ["partial"])
+            self.assertEqual(final, rollback)
+            self.assertEqual(_load_state(state_path), rollback)
+
+    def test_pending_initial_build_removes_state_after_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            state = {
+                "format_version": 1,
+                "pending_build": {
+                    "root_id": "partial",
+                    "rollback_state": None,
+                },
+            }
+            _save_state(state_path, state)
+            client = FakeClient({"partial"})
+
+            final = _reconcile_pending_state(client, state_path, state)
+
+            self.assertIsNone(final)
+            self.assertFalse(state_path.exists())
+            self.assertEqual(client.deleted, ["partial"])
+
+
+class ApiRetrySafetyTests(unittest.TestCase):
+    def _client_with_transport(self, handler) -> WorkflowyClient:
+        client = WorkflowyClient(api_key="test", max_retries=2)
+        client._client.close()
+        client._client = httpx.Client(
+            base_url="https://workflowy.invalid/api/v1",
+            transport=httpx.MockTransport(handler),
+        )
+        return client
+
+    def test_create_node_does_not_retry_503(self) -> None:
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(503, text="temporary")
+
+        with self._client_with_transport(handler) as client:
+            with self.assertRaises(WorkflowyAPIError):
+                client.create_node("inbox", "test")
+
+        self.assertEqual(calls, 1)
+
+    def test_get_node_retries_safe_transient_failure(self) -> None:
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return httpx.Response(503, text="temporary")
+            return httpx.Response(
+                200,
+                json={"node": {"id": "abc", "name": "ok"}},
+            )
+
+        with self._client_with_transport(handler) as client:
+            node = client.get_node("abc")
+
+        self.assertEqual(node["id"], "abc")
+        self.assertEqual(calls, 2)
+
+    def test_node_exists_uses_status_code_not_error_string(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, text="missing")
+
+        with self._client_with_transport(handler) as client:
+            self.assertFalse(client.node_exists("missing"))
 
 
 if __name__ == "__main__":
