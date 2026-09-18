@@ -9,6 +9,7 @@ from pathlib import Path
 from workflowy_importer.api import WorkflowyAPIError, WorkflowyClient
 from workflowy_importer.cli import _load_state, _reconcile_pending_state, _save_state, build_parser
 from workflowy_importer.markdown import LinkResolver, build_tree, count_links, render_inline
+from workflowy_importer.smoke import _known_roots
 
 
 class ImporterTests(unittest.TestCase):
@@ -258,6 +259,18 @@ class ApiRetrySafetyTests(unittest.TestCase):
 
         with self._client_with_transport(handler) as client:
             self.assertFalse(client.node_exists("missing"))
+
+
+class SmokeHelperTests(unittest.TestCase):
+    def test_known_roots_covers_final_and_pending_states(self) -> None:
+        state = {
+            "root_id": "new",
+            "pending_replace": {
+                "old_root_id": "old",
+                "rollback_state": {"root_id": "rollback"},
+            },
+        }
+        self.assertEqual(_known_roots(state), {"new", "old", "rollback"})
 
 
 if __name__ == "__main__":
