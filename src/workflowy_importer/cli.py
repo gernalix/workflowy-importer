@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 from .api import WorkflowyAPIError, WorkflowyClient
+from .credentials import CredentialError, DEFAULT_SECRET_FILE, load_api_key
 from .markdown import LinkResolver, build_tree, count_links, preview_tree, render_inline
 from .model import ImportNode
 
@@ -204,9 +205,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Keep [[wikilinks]] and local .md links as-is instead of linking imported Workflowy nodes",
     )
     parser.add_argument(
+        "--secret-file",
+        type=Path,
+        default=DEFAULT_SECRET_FILE,
+        help="Protected Workflowy API key file (default: ~/.config/codex/secrets/workflowy-api-key)",
+    )
+    parser.add_argument(
         "--api-key-env",
         default="WORKFLOWY_API_KEY",
-        help="Environment variable containing the Workflowy API key",
+        help="Fallback environment variable used only if --secret-file does not exist",
     )
     parser.add_argument(
         "--base-url",
@@ -236,12 +243,10 @@ def run(args: argparse.Namespace) -> int:
         print(preview_tree(parsed.root))
         return 0
 
-    api_key = os.getenv(args.api_key_env)
-    if not api_key:
-        raise RuntimeError(
-            f"Missing API key. Set {args.api_key_env}; "
-            "the key is never written to the state file."
-        )
+    api_key = load_api_key(
+        secret_file=args.secret_file,
+        env_var=args.api_key_env,
+    )
 
     state_path = (
         args.state_file or _default_state_path(source)
@@ -382,7 +387,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         return run(args)
-    except (RuntimeError, ValueError, WorkflowyAPIError, OSError) as exc:
+    except (CredentialError, RuntimeError, ValueError, WorkflowyAPIError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
