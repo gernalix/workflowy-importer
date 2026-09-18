@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 
 from .api import WorkflowyAPIError, WorkflowyClient
-from .cli import _load_state, run
+from .cli import _load_state, build_parser as build_import_parser, run
 
 
 def _fixture(root: Path) -> None:
@@ -44,17 +44,22 @@ def _import_args(
     *,
     replace: bool = False,
 ) -> argparse.Namespace:
-    return argparse.Namespace(
-        source=source,
-        parent="inbox",
-        root_name=root_name,
-        state_file=state_file,
-        replace=replace,
-        dry_run=False,
-        no_resolve_links=False,
-        api_key_env=api_key_env,
-        base_url=base_url,
-    )
+    argv = [
+        str(source),
+        "--parent",
+        "inbox",
+        "--root-name",
+        root_name,
+        "--state-file",
+        str(state_file),
+        "--api-key-env",
+        api_key_env,
+        "--base-url",
+        base_url,
+    ]
+    if replace:
+        argv.append("--replace")
+    return build_import_parser().parse_args(argv)
 
 
 def _quiet_run(args: argparse.Namespace) -> int:
