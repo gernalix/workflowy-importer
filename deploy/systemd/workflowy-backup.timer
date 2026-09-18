@@ -1,0 +1,10 @@
+[Unit]
+Description=Create a daily Workflowy backup
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target
