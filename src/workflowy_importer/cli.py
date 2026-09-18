@@ -99,6 +99,40 @@ def _import(
     return root_id, ids, updates
 
 
+def _reconcile_pending_replace(
+    client: WorkflowyClient,
+    state_path: Path,
+    state: dict | None,
+) -> dict | None:
+    if not state:
+        return state
+
+    pending = state.get("pending_replace")
+    if not isinstance(pending, dict):
+        return state
+
+    new_root = state.get("root_id")
+    old_root = pending.get("old_root_id")
+    rollback_state = pending.get("rollback_state")
+
+    if new_root and client.node_exists(str(new_root)):
+        if old_root and client.node_exists(str(old_root)):
+            client.delete_node(str(old_root))
+        final_state = dict(state)
+        final_state.pop("pending_replace", None)
+        _save_state(state_path, final_state)
+        return final_state
+
+    if isinstance(rollback_state, dict):
+        _save_state(state_path, rollback_state)
+        return rollback_state
+
+    raise RuntimeError(
+        f"Cannot reconcile interrupted --replace recorded in {state_path}; "
+        "new import is missing and rollback metadata is unavailable."
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="workflowy-import-md",
@@ -156,6 +190,7 @@ def run(args: argparse.Namespace) -> int:
     root_name = args.root_name or (
         f"Imported Markdown — {source.stem if source.is_file() else source.name}"
     )
+    resolve_links = not args.no_resolve_links
 
     parsed = build_tree(source, root_name)
     resolver = LinkResolver(parsed.root)
@@ -183,17 +218,21 @@ def run(args: argparse.Namespace) -> int:
     previous = _load_state(state_path)
     source_key = str(source)
 
-    config_matches = bool(
-        previous
-        and previous.get("source") == source_key
-        and previous.get("parent") == args.parent
-        and previous.get("root_name") == root_name
-    )
-    same_fingerprint = bool(
-        config_matches and previous.get("fingerprint") == parsed.fingerprint
-    )
-
     with WorkflowyClient(api_key=api_key, base_url=args.base_url) as client:
+        previous = _reconcile_pending_replace(client, state_path, previous)
+
+        config_matches = bool(
+            previous
+            and previous.get("format_version") == 1
+            and previous.get("source") == source_key
+            and previous.get("parent") == args.parent
+            and previous.get("root_name") == root_name
+            and previous.get("resolve_links") == resolve_links
+        )
+        same_fingerprint = bool(
+            config_matches and previous.get("fingerprint") == parsed.fingerprint
+        )
+
         if same_fingerprint and previous and previous.get("root_id"):
             if client.node_exists(str(previous["root_id"])):
                 print(
@@ -227,36 +266,62 @@ def run(args: argparse.Namespace) -> int:
                 root=parsed.root,
                 parent=args.parent,
                 resolver=resolver,
-                resolve_links=not args.no_resolve_links,
+                resolve_links=resolve_links,
             )
 
+            final_state = {
+                "format_version": 1,
+                "source": source_key,
+                "parent": args.parent,
+                "root_name": root_name,
+                "resolve_links": resolve_links,
+                "fingerprint": parsed.fingerprint,
+                "root_id": new_root_id,
+                "node_count": len(ids),
+            }
+
             if old_root_id and args.replace and old_root_id != new_root_id:
+                staged_state = dict(final_state)
+                staged_state["pending_replace"] = {
+                    "old_root_id": old_root_id,
+                    "rollback_state": previous,
+                }
+                _save_state(state_path, staged_state)
+
                 try:
                     client.delete_node(old_root_id)
                 except Exception:
-                    client.delete_node(new_root_id)
-                    new_root_id = None
+                    try:
+                        client.delete_node(new_root_id)
+                        new_root_id = None
+                        if previous is not None:
+                            _save_state(state_path, previous)
+                    finally:
+                        pass
                     raise
 
-            _save_state(
-                state_path,
-                {
-                    "format_version": 1,
-                    "source": source_key,
-                    "parent": args.parent,
-                    "root_name": root_name,
-                    "fingerprint": parsed.fingerprint,
-                    "root_id": new_root_id,
-                    "node_count": len(ids),
-                },
-            )
+            _save_state(state_path, final_state)
+
         except Exception:
             if new_root_id:
                 try:
-                    client.delete_node(new_root_id)
+                    current_state = _load_state(state_path)
+                    pending = (
+                        current_state.get("pending_replace")
+                        if isinstance(current_state, dict)
+                        else None
+                    )
+                    old_was_deleted = bool(
+                        isinstance(pending, dict)
+                        and pending.get("old_root_id")
+                        and not client.node_exists(str(pending["old_root_id"]))
+                    )
+                    if not old_was_deleted:
+                        client.delete_node(new_root_id)
                 except Exception as cleanup_exc:
                     print(
-                        f"WARNING: failed to clean partial import {new_root_id}: {cleanup_exc}",
+                        f"WARNING: cleanup/recovery needs attention for {new_root_id}: "
+                        f"{cleanup_exc}",
                         file=sys.stderr,
                     )
             raise
