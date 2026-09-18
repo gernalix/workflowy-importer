@@ -9,7 +9,7 @@ from pathlib import Path
 from workflowy_importer.api import WorkflowyAPIError, WorkflowyClient
 from workflowy_importer.cli import _load_state, _reconcile_pending_state, _save_state, build_parser
 from workflowy_importer.markdown import LinkResolver, build_tree, count_links, render_inline
-from workflowy_importer.smoke import _known_roots
+from workflowy_importer.smoke import _import_args, _known_roots
 
 
 class ImporterTests(unittest.TestCase):
@@ -262,6 +262,21 @@ class ApiRetrySafetyTests(unittest.TestCase):
 
 
 class SmokeHelperTests(unittest.TestCase):
+    def test_import_args_inherit_cli_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = _import_args(
+                root,
+                root / "state.json",
+                "smoke",
+                "WORKFLOWY_API_KEY",
+                "https://workflowy.invalid/api/v1",
+            )
+
+        self.assertEqual(args.parent, "inbox")
+        self.assertFalse(args.replace)
+        self.assertTrue(hasattr(args, "secret_file"))
+
     def test_known_roots_covers_final_and_pending_states(self) -> None:
         state = {
             "root_id": "new",
