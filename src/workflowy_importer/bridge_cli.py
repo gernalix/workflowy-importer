@@ -22,6 +22,7 @@ from .cache import (
 )
 from .chatgpt import conversation_to_markdown, load_conversation
 from .credentials import CredentialError, DEFAULT_SECRET_FILE, load_api_key
+from .control import run_control_actions
 from .links import workflowy_url
 
 DEFAULT_CACHE = Path("~/.local/share/workflowy-bridge/cache.sqlite3").expanduser()
@@ -225,6 +226,14 @@ def build_parser() -> argparse.ArgumentParser:
     arc.add_argument("--older-than-days", type=int, default=90)
     arc.add_argument("--archive-target", required=True)
     arc.add_argument("--apply", action="store_true")
+
+    control = sub.add_parser(
+        "control",
+        help="Run explicit allowlisted RUN: actions from a Workflowy control node",
+    )
+    control.add_argument("--parent", required=True)
+    control.add_argument("--rules", type=Path, default=DEFAULT_RULES)
+    control.add_argument("--timeout", type=float, default=120.0)
 
     serve = sub.add_parser("serve", help="Run the localhost capture bridge")
     serve.add_argument("--host", default="127.0.0.1")
@@ -567,6 +576,19 @@ def run(args: argparse.Namespace) -> int:
                             args.archive_target,
                             position="bottom",
                         )
+            elif args.command == "control":
+                results = run_control_actions(
+                    client,
+                    parent=args.parent,
+                    config=load_rules(args.rules),
+                    timeout=args.timeout,
+                )
+                for result in results:
+                    print(
+                        f"{result.node_id}\t{result.action}\t"
+                        f"exit={result.returncode}"
+                    )
+                print(f"processed={len(results)}")
             elif args.command == "serve":
                 from .bridge import serve
 
