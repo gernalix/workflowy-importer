@@ -1,0 +1,15 @@
+[Unit]
+Description=Workflowy localhost automation bridge
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/workflowy-importer
+ExecStart=%h/projects/workflowy-importer/.venv/bin/wf serve
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
