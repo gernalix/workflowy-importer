@@ -1,0 +1,25 @@
+{
+  "default": "inbox",
+  "classifier_min_confidence": 0.9,
+  "rules": [
+    {
+      "name": "personalhub-bug",
+      "contains": ["personalhub", "bug"],
+      "destination": "ph",
+      "mirror_today": true
+    },
+    {
+      "name": "github-link",
+      "any_contains": ["github.com/gernalix/", "pull request", "commit"],
+      "destination": "coding"
+    },
+    {
+      "name": "read-later",
+      "any_contains": ["read later", "da leggere"],
+      "destination": "reading"
+    }
+  ],
+  "normalizations": [
+    {"regex": "#Python\\b", "replacement": "#python", "ignore_case": true}
+  ]
+}
