@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh local Workflowy SQLite cache
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/workflowy-importer
+ExecStart=%h/projects/workflowy-importer/.venv/bin/wf sync
+NoNewPrivileges=true
+PrivateTmp=true
