@@ -1,0 +1,9 @@
+[Unit]
+Description=Create daily Workflowy JSON backup
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/workflowy-importer
+ExecStart=/bin/sh -lc 'mkdir -p "$HOME/Documents/Workflowy/backups" && exec "$HOME/projects/workflowy-importer/.venv/bin/wf" backup "$HOME/Documents/Workflowy/backups/$(date +%%F).json"'
+NoNewPrivileges=true
+PrivateTmp=true
