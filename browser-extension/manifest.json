@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "ChatGPT to Workflowy (local bridge)",
+  "version": "0.1.0",
+  "description": "Send the currently open ChatGPT conversation to a localhost Workflowy bridge without exposing the Workflowy API key to the browser extension.",
+  "permissions": ["activeTab"],
+  "host_permissions": ["http://127.0.0.1:8765/*"],
+  "background": {"service_worker": "background.js"},
+  "action": {"default_title": "Send this chat to Workflowy"},
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
