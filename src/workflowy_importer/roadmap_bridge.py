@@ -315,14 +315,29 @@ def prompt_note(
     binding = binding or {}
     has_chrome = bool(binding.get("context_id") and binding.get("url"))
     has_codex = bool(binding.get("codex_thread") and binding.get("codex_deep_link"))
+    lines.append(
+        "Link: "
+        + ("🌐 Chrome ✅" if has_chrome else "🌐 Chrome ❌")
+        + " · "
+        + ("🧠 Codex ✅" if has_codex else "🧠 Codex ❌")
+    )
     if not (has_chrome and has_codex):
         missing = []
         if not has_chrome:
             missing.append("Chrome")
         if not has_codex:
             missing.append("Codex")
-        lines.append(f"🔗 Collega: {_action_url(prompt.prompt_id, 'bind')}")
+        lines.append(f"🔗 Completa link: {_action_url(prompt.prompt_id, 'bind')}")
         lines.append("Link mancanti: " + " · ".join(missing))
+
+    chrome_action = "Ricollega Chrome" if has_chrome else "Associa Chrome"
+    codex_action = "Ricollega Codex" if has_codex else "Associa Codex"
+    lines.append(
+        f"🌐 {chrome_action}: {_action_url(prompt.prompt_id, 'bind-chrome')}"
+    )
+    lines.append(
+        f"🧠 {codex_action}: {_action_url(prompt.prompt_id, 'bind-codex')}"
+    )
 
     if has_chrome:
         lines.append(f"🌐 Chrome URL: {binding['url']}")

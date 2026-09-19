@@ -340,7 +340,16 @@ class RoadmapBridgeTests(unittest.TestCase):
             self.assertIn("🌐 Chrome URL: https://chatgpt.com/c/example", prompt_node["note"])
             self.assertIn("↗ Apri Chrome:", prompt_node["note"])
             self.assertIn("🧠 Codex URL: codex://threads/thread-1", prompt_node["note"])
-            self.assertNotIn("🔗 Collega:", prompt_node["note"])
+            self.assertIn("Link: 🌐 Chrome ✅ · 🧠 Codex ✅", prompt_node["note"])
+            self.assertNotIn("🔗 Completa link:", prompt_node["note"])
+            self.assertIn(
+                "🌐 Ricollega Chrome: http://127.0.0.1:43817/ui/prompt/123456/bind-chrome",
+                prompt_node["note"],
+            )
+            self.assertIn(
+                "🧠 Ricollega Codex: http://127.0.0.1:43817/ui/prompt/123456/bind-codex",
+                prompt_node["note"],
+            )
             self.assertIn("🔎 Verify: http://127.0.0.1:43817/ui/prompt/123456/verify", prompt_node["note"])
             self.assertIn("Coda integrazione: 1/2", prompt_node["note"])
             db.close()
@@ -368,12 +377,56 @@ class RoadmapBridgeTests(unittest.TestCase):
                 if str(node["name"]).startswith("[123456]")
             )
             self.assertIn(
-                "🔗 Collega: http://127.0.0.1:43817/ui/prompt/123456/bind",
+                "🔗 Completa link: http://127.0.0.1:43817/ui/prompt/123456/bind",
                 prompt_node["note"],
             )
+            self.assertIn("Link: 🌐 Chrome ✅ · 🧠 Codex ❌", prompt_node["note"])
             self.assertIn("Link mancanti: Codex", prompt_node["note"])
+            self.assertIn(
+                "🌐 Ricollega Chrome: http://127.0.0.1:43817/ui/prompt/123456/bind-chrome",
+                prompt_node["note"],
+            )
+            self.assertIn(
+                "🧠 Associa Codex: http://127.0.0.1:43817/ui/prompt/123456/bind-codex",
+                prompt_node["note"],
+            )
             self.assertIn("🌐 Chrome URL: https://chatgpt.com/c/example", prompt_node["note"])
             self.assertNotIn("🧠 Codex URL:", prompt_node["note"])
+            db.close()
+
+    def test_codex_first_binding_is_visible_and_chrome_recoverable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(Path(tmp) / "cache.sqlite")
+            client = FakeClient()
+            sync_roadmap(
+                client,
+                db,
+                raw_roadmap_db=roadmap_bytes(),
+                submitter=lambda doc, key: {"status": "ok"},
+                ccs_bindings={
+                    "123456": {
+                        "context_id": None,
+                        "url": None,
+                        "codex_thread": "thread-1",
+                        "codex_deep_link": "codex://threads/thread-1",
+                    }
+                },
+            )
+            prompt_node = next(
+                node for node in client.nodes
+                if str(node["name"]).startswith("[123456]")
+            )
+            self.assertIn("Link: 🌐 Chrome ❌ · 🧠 Codex ✅", prompt_node["note"])
+            self.assertIn("Link mancanti: Chrome", prompt_node["note"])
+            self.assertIn(
+                "🌐 Associa Chrome: http://127.0.0.1:43817/ui/prompt/123456/bind-chrome",
+                prompt_node["note"],
+            )
+            self.assertIn(
+                "🧠 Ricollega Codex: http://127.0.0.1:43817/ui/prompt/123456/bind-codex",
+                prompt_node["note"],
+            )
+            self.assertIn("🧠 Codex URL: codex://threads/thread-1", prompt_node["note"])
             db.close()
 
     def test_repo_pass_override_requires_integrated_pipeline(self):
