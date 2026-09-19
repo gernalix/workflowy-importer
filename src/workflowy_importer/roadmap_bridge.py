@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Callable
 
 from .api import WorkflowyAPIError, WorkflowyClient
+from .fix_packets import load_fix_packet, packet_mutation
 from .links import workflowy_url
 
 ROADMAP_NAMESPACE = "codex-roadmap"
@@ -578,6 +579,7 @@ def sync_roadmap(
     roadmap_dir: Path = Path("~/projects/codex-roadmap"),
     raw_roadmap_db: bytes | None = None,
     submitter: Callable[[dict, str], dict] | None = None,
+    fix_packet_loader: Callable[[str, str], dict | None] | None = None,
     pipeline_status: dict[str, dict] | None = None,
     ccs_bindings: dict[str, dict] | None = None,
 ) -> dict[str, int]:
@@ -695,11 +697,13 @@ def sync_roadmap(
     submitted = 0
     warnings = 0
     fix_prompts = 0
+    fix_packets_submitted = 0
     submit = submitter or (
         lambda document, key: _submit_with_local_writer(
             roadmap_dir, document, key
         )
     )
+    packet_loader = fix_packet_loader or load_fix_packet
 
     for prompt_id, node_id in node_ids.items():
         prompt = prompt_by_id[prompt_id]
@@ -722,7 +726,15 @@ def sync_roadmap(
             )
         except ValueError:
             warnings += 1
-            continue
+            # A prior writer pass may already have applied the matching B/F
+            # transition. The packet is independent evidence and still needs
+            # its one canonical publication on the next timer pass.
+            if command not in {"BLOCKED", "FAIL"} or prompt.status != {
+                "BLOCKED": "blocked",
+                "FAIL": "failed",
+            }[command]:
+                continue
+            operations = []
         if operations:
             request_key = (
                 f"workflowy-{prompt_id}-{command.lower()}-"
@@ -745,6 +757,27 @@ def sync_roadmap(
             ):
                 client.create_node(node_id, wanted, position="top")
                 fix_prompts += 1
+            packet = packet_loader(prompt_id, command)
+            if packet:
+                operation, request_key = packet_mutation(packet)
+                already_sent = db.execute(
+                    "SELECT 1 FROM events WHERE source=? AND external_key=?",
+                    ("roadmap_fix_packet", request_key),
+                ).fetchone()
+                if not already_sent:
+                    submit(
+                        {
+                            "schema": "codex-roadmap.mutation.v1",
+                            "actor": "workflowy-fix-packet",
+                            "operations": [operation],
+                        },
+                        request_key,
+                    )
+                    db.execute(
+                        "INSERT INTO events(source,external_key,payload_json) VALUES(?,?,?)",
+                        ("roadmap_fix_packet", request_key, json.dumps(packet, sort_keys=True)),
+                    )
+                    fix_packets_submitted += 1
 
     updated = 0
     moved = 0
@@ -786,5 +819,6 @@ def sync_roadmap(
         "moved": moved,
         "mutations_submitted": submitted,
         "fix_prompts_created": fix_prompts,
+        "fix_packets_submitted": fix_packets_submitted,
         "warnings": warnings,
     }

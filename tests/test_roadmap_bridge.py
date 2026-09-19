@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -7,8 +8,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from workflowy_importer import bridge_cli
-from workflowy_importer.bridge import _roadmap_prompt_text
+from workflowy_importer.bridge import _roadmap_fix_packet, _roadmap_prompt_text
 from workflowy_importer.cache import connect
+from workflowy_importer.fix_packets import load_fix_packet
 from workflowy_importer.roadmap_bridge import (
     RoadmapPrompt,
     command_from_children,
@@ -156,6 +158,23 @@ class RoadmapBridgeTests(unittest.TestCase):
             self.assertIsNotNone(found)
             self.assertEqual("PROMPT_ID=123456\nDo parent\n", found[0])
             self.assertEqual("roadmap.sqlite", found[1])
+
+    def test_local_bridge_reads_canonical_fix_packet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path = root / "roadmap.sqlite"
+            db_path.write_bytes(roadmap_bytes("blocked"))
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                "CREATE TABLE analyses(analysis_id INTEGER PRIMARY KEY,prompt_id TEXT,analyzed_at TEXT,summary TEXT,source_ref TEXT);"
+            )
+            conn.execute(
+                "INSERT INTO analyses VALUES(1,'123456','2026-09-19T01:00:00Z',?,?)",
+                ('{"prompt_id":"123456","outcome":"BLOCKED"}', "codex-usage:cycle:hash"),
+            )
+            conn.commit()
+            conn.close()
+            self.assertEqual("BLOCKED", _roadmap_fix_packet(root, "123456")["outcome"])
 
     def test_cli_dispatches_roadmap_sync(self):
         args = bridge_cli.build_parser().parse_args(["roadmap-sync"])
@@ -360,6 +379,64 @@ class RoadmapBridgeTests(unittest.TestCase):
                 )
             )
             db.close()
+
+    def test_blocked_and_failed_reports_publish_one_sanitized_packet(self):
+        for command, outcome in (("B", "BLOCKED"), ("F", "FAIL")):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as tmp:
+                published = Path(tmp) / "published"
+                metrics_path = published / "prompts/123456/cycles/report-1/metrics.json"
+                metrics_path.parent.mkdir(parents=True)
+                metrics_path.write_text(
+                    json.dumps(
+                        {
+                            "prompt_id": "123456",
+                            "status": outcome,
+                            "cycle_key": "report-1",
+                            "timestamp_end_utc": "2026-09-19T01:00:00Z",
+                            "final_response_redacted": (
+                                f"RESULT={outcome}\n"
+                                "Blocker: token=super-secret failed at /private/repo/file.py\n"
+                                "Branch: task/123456\nPR #42\ncommit abcdef1\n"
+                                "Next action: repair the parser fixture."
+                            ),
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                packet = load_fix_packet("123456", outcome, published_root=published)
+                self.assertEqual(outcome, packet["outcome"])
+                self.assertIn("<redacted>", packet["blocker"])
+                self.assertNotIn("/private/repo", packet["blocker"])
+                self.assertEqual("task/123456", packet["work_state"]["branch"])
+                self.assertEqual("#42", packet["work_state"]["pr"])
+
+                db = connect(Path(tmp) / "cache.sqlite")
+                client = FakeClient()
+                submitted: list[tuple[dict, str]] = []
+                submit = lambda doc, key: submitted.append((doc, key)) or {"status": "ok"}
+                sync_roadmap(client, db, raw_roadmap_db=roadmap_bytes(), submitter=submit)
+                prompt_node = next(node for node in client.nodes if str(node["name"]).startswith("[123456]"))
+                client.create_node(prompt_node["id"], command)
+                first = sync_roadmap(
+                    client,
+                    db,
+                    raw_roadmap_db=roadmap_bytes(),
+                    submitter=submit,
+                    fix_packet_loader=lambda _id, _outcome: packet,
+                )
+                self.assertEqual(1, first["fix_packets_submitted"])
+                self.assertEqual(2, len(submitted))
+                self.assertEqual("analysis", submitted[-1][0]["operations"][0]["op"])
+                second = sync_roadmap(
+                    client,
+                    db,
+                    raw_roadmap_db=roadmap_bytes("blocked" if outcome == "BLOCKED" else "failed"),
+                    submitter=submit,
+                    fix_packet_loader=lambda _id, _outcome: packet,
+                )
+                self.assertEqual(0, second["fix_packets_submitted"])
+                self.assertEqual(2, len(submitted))
+                db.close()
 
 
 if __name__ == "__main__":

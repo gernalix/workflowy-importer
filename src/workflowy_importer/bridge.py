@@ -56,6 +56,35 @@ def _roadmap_prompt_text(roadmap_dir: Path, prompt_id: str) -> tuple[str, str] |
     return path.read_text(encoding="utf-8"), rel
 
 
+def _roadmap_fix_packet(roadmap_dir: Path, prompt_id: str) -> dict | None:
+    """Read the latest publisher packet from the canonical roadmap DB."""
+    if not re.fullmatch(r"\d{6}", prompt_id):
+        return None
+    db_path = roadmap_dir.expanduser() / "roadmap.sqlite"
+    if not db_path.is_file():
+        return None
+    conn = sqlite3.connect(f"file:{db_path.resolve()}?mode=ro", uri=True)
+    try:
+        row = conn.execute(
+            "SELECT summary FROM analyses WHERE prompt_id=? AND source_ref LIKE 'codex-usage:%' "
+            "ORDER BY analyzed_at DESC,analysis_id DESC LIMIT 1",
+            (prompt_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.close()
+    if not row:
+        return None
+    try:
+        packet = json.loads(str(row[0] or ""))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(packet, dict) or packet.get("prompt_id") != prompt_id:
+        return None
+    return packet
+
+
 def _ensure_mirror_parent(client: WorkflowyClient) -> str:
     try:
         for node in client.list_nodes("today"):
@@ -138,6 +167,14 @@ def serve(
                         "source": source,
                     },
                 )
+                return
+            match = re.fullmatch(r"/roadmap/fix-packet/(\d{6})", self.path)
+            if match:
+                packet = _roadmap_fix_packet(roadmap_dir, match.group(1))
+                if not packet:
+                    self._reply(404, {"error": "fix packet not found"})
+                    return
+                self._reply(200, packet)
                 return
             self._reply(404, {"error": "not found"})
 
