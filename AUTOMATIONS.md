@@ -36,7 +36,7 @@ Use one canonical runtime: the ThinkPad/Fedora workstation.
 | 8 | Hub-and-spoke without manual linking | One canonical node plus automatic mirrors, never copied text. |
 | 9 | Resurfacing | `wf resurface --older-than-days ...`. |
 | 10 | Project scaffolding/index | `wf projects --root ~/projects`; records local path as text and Git remote when available. |
-| 11 | Codex/roadmap events | `wf roadmap-sync` mirrors the complete canonical roadmap with tags/backlinks and turns exact `running`/`PASS`/`FAIL` child nodes into single-writer mutations. Generic events remain available through `wf ingest`. |
+| 11 | Codex/roadmap events | `wf roadmap-sync` exposes a compact Queue/Running/Needs fix/Done/Archive dashboard; exact child commands `R/P/B/F` become canonical single-writer transitions, with B/F marked `#needs_fix`. |
 | 12 | ChatGPT → Workflowy | `wf chatgpt` extracts one conversation from `conversations.json`; `browser-extension/` exports the current open chat privately through localhost. |
 | 13 | GitHub → Workflowy | `wf ingest github event.json`, idempotent through event IDs/hashes. |
 | 14 | ActivityWatch → Workflowy | `wf ingest activitywatch event.json`. |
