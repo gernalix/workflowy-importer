@@ -48,7 +48,7 @@ STATUS_GROUP_KEY = {
 }
 DEFAULT_REPO_TASK = Path.home() / "projects" / "github-autosync" / "repo_single_writer.py"
 DEFAULT_CCS_URL = "http://127.0.0.1:43817"
-LEGACY_GROUP_KEYS = ("failed", "cancelled", "superseded")
+LEGACY_GROUP_KEYS = ("pending", "failed", "cancelled", "superseded")
 
 
 @dataclass(slots=True)
@@ -308,7 +308,8 @@ def prompt_note(
     if binding and binding.get("context_id"):
         lines.append(f"🌐 ChatGPT: {_action_url(prompt.prompt_id, 'chrome')}")
     if binding and binding.get("codex_deep_link"):
-        lines.append(f"🧠 Codex: {binding['codex_deep_link']}")
+        lines.append(f"🧠 Codex deep link: {binding['codex_deep_link']}")
+        lines.append(f"↗ Apri Codex: {_action_url(prompt.prompt_id, 'codex')}")
     if prompt.current_path:
         lines.append(
             f"Sorgente audit: https://github.com/{repository}/blob/{branch}/{prompt.current_path}"
