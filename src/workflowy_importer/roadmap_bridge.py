@@ -68,6 +68,8 @@ class RoadmapPrompt:
     dependents: list[str]
     relations_out: list[tuple[str, str]]
     relations_in: list[tuple[str, str]]
+    last_outcome: str | None
+    fix_packet: dict | None
 
 
 def _gh_json(*args: str) -> dict:
@@ -160,6 +162,43 @@ def read_roadmap_db(raw: bytes) -> list[RoadmapPrompt]:
                 rel_in.setdefault(row["to_prompt_id"], []).append(
                     (row["relation_type"], row["from_prompt_id"])
                 )
+
+            last_outcomes: dict[str, str] = {}
+            try:
+                for row in conn.execute(
+                    """SELECT prompt_id,outcome
+                       FROM executions
+                       WHERE outcome IS NOT NULL
+                       ORDER BY COALESCE(ended_at,started_at,recorded_at) DESC,
+                                execution_id DESC"""
+                ):
+                    prompt_id = str(row["prompt_id"])
+                    last_outcomes.setdefault(prompt_id, str(row["outcome"]))
+            except sqlite3.OperationalError:
+                pass
+
+            fix_packets: dict[str, dict] = {}
+            try:
+                for row in conn.execute(
+                    """SELECT prompt_id,summary
+                       FROM analyses
+                       WHERE source_ref LIKE 'codex-usage:%'
+                       ORDER BY analyzed_at DESC,analysis_id DESC"""
+                ):
+                    prompt_id = str(row["prompt_id"])
+                    if prompt_id in fix_packets:
+                        continue
+                    try:
+                        packet = json.loads(str(row["summary"] or ""))
+                    except json.JSONDecodeError:
+                        continue
+                    if (
+                        isinstance(packet, dict)
+                        and str(packet.get("prompt_id") or "") == prompt_id
+                    ):
+                        fix_packets[prompt_id] = packet
+            except sqlite3.OperationalError:
+                pass
         finally:
             conn.close()
 
@@ -179,6 +218,8 @@ def read_roadmap_db(raw: bytes) -> list[RoadmapPrompt]:
             dependents=sorted(dependents.get(row["prompt_id"], [])),
             relations_out=sorted(rel_out.get(row["prompt_id"], [])),
             relations_in=sorted(rel_in.get(row["prompt_id"], [])),
+            last_outcome=last_outcomes.get(str(row["prompt_id"])),
+            fix_packet=fix_packets.get(str(row["prompt_id"])),
         )
         for row in rows
     ]
