@@ -216,17 +216,19 @@ Use `--create-column` only when you intentionally want the program to add that c
 
 ## Codex roadmap ↔ Workflowy
 
-`wf roadmap-sync` usa Workflowy come dashboard operativa della roadmap canonica.
+`wf roadmap-sync` usa Workflowy come **unica centralina operativa visibile** della roadmap canonica. `roadmap.sqlite` resta la source of truth; GitHub conserva audit e codice. Le viste Markdown sono compatibilità/documentazione e non determinano più lo stato mostrato.
 
-La vista è volutamente corta:
+La dashboard combina roadmap + stato reale di `github-autosync` + binding di `chrome-codex-switcher`:
 
-- `Queue`: prompt ancora da eseguire;
-- `Running`: prompt avviati;
-- `Needs fix`: BLOCKED e FAIL;
-- `Done`: PASS;
-- `Archive`: stati non operativi/storici.
+- `Ready`: prompt pendenti con dipendenze soddisfatte;
+- `Waiting`: prompt pendenti ancora dipendenti da altri task;
+- `Running`: Codex ha realmente acquisito il prompt;
+- `Integration`: worker finito, PR/CI/rebase/merge gestiti asincronamente;
+- `Needs fix`: BLOCKED/FAIL o hard blocker dell'integratore;
+- `Done`: PASS canonico;
+- `Archive`: stati storici/non operativi.
 
-Il titolo di ogni prompt resta leggibile (`[PROMPT_ID] titolo`); stato, progetto, modello, spiegazione, dipendenze e link restano nella nota.
+Ogni prompt espone azioni operative nella nota: `🚀 Apri`, `📋 Copia`, `🌐 ChatGPT` quando esiste il binding Chrome, e il deep link `🧠 Codex` quando CCS lo conosce. `PROMPT_ID` è la chiave comune e non viene mai dedotto da URL o titoli.
 
 Sotto un prompt usa **un solo nodo figlio di stato**:
 
@@ -237,7 +239,7 @@ B
 F
 ```
 
-`R = running`, `P = PASS`, `B = BLOCKED`, `F = FAIL`. Le forme lunghe restano accettate per compatibilità. `P/B/F` passano sempre dal single writer della roadmap; `B/F` aggiungono anche un piccolo marker `#needs_fix` sotto il prompt. Se sono presenti due comandi di stato contemporaneamente, il bridge non sceglie e non scrive nulla.
+`R = running`, `P = PASS`, `B = BLOCKED`, `F = FAIL`. Sono override di emergenza, non il flusso ordinario. Per task repository-backed `P` è rifiutato finché `github-autosync` non conferma `pipeline_state=done`; normalmente il PASS viene applicato automaticamente dopo il merge. `B/F` aggiungono anche un marker `#needs_fix`. Se sono presenti due comandi contemporaneamente, il bridge non sceglie e non scrive nulla.
 
 Il timer opzionale `deploy/systemd/workflowy-roadmap-sync.timer` mantiene la dashboard sincronizzata con `roadmap.sqlite`, che resta l'unica source of truth.
 
