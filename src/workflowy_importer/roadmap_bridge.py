@@ -712,6 +712,7 @@ def _ensure_mapped_node(
     parent_id: str,
     name: str,
     note: str | None = None,
+    layout_mode: str = "bullets",
 ) -> tuple[str, dict]:
     mapped = _mapping_get(db, key)
     if mapped and mapped[0] in existing_ids:
@@ -720,6 +721,7 @@ def _ensure_mapped_node(
         parent_id,
         name,
         note=note,
+        layout_mode=layout_mode,
         position="bottom",
     )
     _mapping_set(db, key, node_id, {})
@@ -822,6 +824,7 @@ def sync_roadmap(
         parent_id=parent,
         name="Codex",
         note="Dashboard operativa della roadmap Codex. roadmap.sqlite resta la fonte canonica.",
+        layout_mode="h1",
     )
     current_root = by_id.get(root_id)
     if current_root:
@@ -830,6 +833,7 @@ def sync_roadmap(
                 root_id,
                 "Codex",
                 note="Dashboard operativa della roadmap Codex. roadmap.sqlite resta la fonte canonica.",
+                layout_mode="h1",
             )
         elif str(current_root.get("note") or "") != (
             "Dashboard operativa della roadmap Codex. roadmap.sqlite resta la fonte canonica."
@@ -838,6 +842,7 @@ def sync_roadmap(
                 root_id,
                 "Codex",
                 note="Dashboard operativa della roadmap Codex. roadmap.sqlite resta la fonte canonica.",
+                layout_mode="h1",
             )
 
     group_counts = {key: 0 for key, _ in DASHBOARD_GROUPS}
@@ -861,12 +866,13 @@ def sync_roadmap(
             key=GROUP_PREFIX + key,
             parent_id=root_id,
             name=desired_name,
+            layout_mode="h2",
         )
         group_ids[key] = group_id
         current_group = by_id.get(group_id)
         if current_group:
             if str(current_group.get("name") or "") != desired_name:
-                client.update_node(group_id, desired_name)
+                client.update_node(group_id, desired_name, layout_mode="h2")
             if str(current_group.get("parent_id") or "") != root_id:
                 client.move_node(group_id, root_id, position="bottom")
 
