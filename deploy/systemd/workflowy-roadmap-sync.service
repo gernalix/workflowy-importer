@@ -1,0 +1,10 @@
+[Unit]
+Description=Sync codex-roadmap with Workflowy
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/workflowy-importer
+ExecStart=%h/projects/workflowy-importer/.venv/bin/wf roadmap-sync
+NoNewPrivileges=true
+PrivateTmp=true

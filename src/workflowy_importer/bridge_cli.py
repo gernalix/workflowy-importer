@@ -235,6 +235,19 @@ def build_parser() -> argparse.ArgumentParser:
     control.add_argument("--rules", type=Path, default=DEFAULT_RULES)
     control.add_argument("--timeout", type=float, default=120.0)
 
+    roadmap = sub.add_parser(
+        "roadmap-sync",
+        help="Mirror the canonical codex roadmap into Workflowy and process running/PASS/FAIL children",
+    )
+    roadmap.add_argument("--parent", default="inbox")
+    roadmap.add_argument("--repository", default="gernalix/codex-roadmap")
+    roadmap.add_argument("--branch", default="main")
+    roadmap.add_argument(
+        "--roadmap-dir",
+        type=Path,
+        default=Path("~/projects/codex-roadmap"),
+    )
+
     serve = sub.add_parser("serve", help="Run the localhost capture bridge")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
@@ -326,7 +339,17 @@ def run(args: argparse.Namespace) -> int:
                 phdb.close()
 
         with _client(args) as client:
-            if args.command == "sync":
+            if args.command == "roadmap-sync":
+                result = sync_roadmap(
+                    client,
+                    db,
+                    parent=args.parent,
+                    repository=args.repository,
+                    branch=args.branch,
+                    roadmap_dir=args.roadmap_dir,
+                )
+                print(json.dumps(result, sort_keys=True))
+            elif args.command == "sync":
                 print(f"cached={_sync(client, db)}")
             elif args.command == "add":
                 print(

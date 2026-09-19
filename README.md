@@ -214,6 +214,33 @@ wf personalhub-links ~/path/to/personalhub.db \
 
 Use `--create-column` only when you intentionally want the program to add that column.
 
+## Codex roadmap ↔ Workflowy
+
+`wf roadmap-sync` importa automaticamente l'intero `roadmap.sqlite` canonico in Workflowy e usa la stessa vista come pannello di stato umano.
+
+Al primo avvio crea `Codex roadmap #roadmap` sotto Inbox, quindi un gruppo per stato e un nodo canonico per ogni `PROMPT_ID`. Ogni nodo contiene tag ricercabili come `#status_pending` e `#project_personalhub`, più link Workflowy reciproci per dipendenze e relazioni tra prompt.
+
+```bash
+wf roadmap-sync
+```
+
+Sotto il nodo del prompt che stai eseguendo aggiungi **un solo figlio esatto**:
+
+```text
+running
+```
+
+Quando termina, rinomina quel figlio in `PASS` oppure `FAIL`.
+
+- `running` invia al single writer la normale transizione a `running`, rendendo il prompt protetto.
+- `PASS` registra un esito umano confermato; il writer sposta il prompt in `completed/` e la normale logica delle dipendenze rende eseguibili i figli soltanto quando tutti i prerequisiti sono completati.
+- `FAIL` registra il fallimento e aggiunge sotto il prompt un testo pronto da copiare in ChatGPT: `il prompt XXXXXX è FAIL: applica il fix nel codice e nella roadmap, usando il writer unico; lascia nella roadmap solo l'eventuale lavoro Codex-only`.
+- Due comandi di stato contemporanei sono considerati ambigui e vengono ignorati: il bridge non indovina.
+
+Il bridge legge il DB SQLite remoto canonico, non i Markdown generati. Workflowy è quindi una proiezione interattiva completa della roadmap, non una seconda source of truth.
+
+Il timer opzionale `deploy/systemd/workflowy-roadmap-sync.timer` esegue il sync ogni 75 secondi, abbastanza rapidamente per l'uso manuale e sopra il limite di una full-export Workflowy al minuto.
+
 ## External systems
 
 A common JSON-event adapter is available for:

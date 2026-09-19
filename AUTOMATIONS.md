@@ -36,7 +36,7 @@ Use one canonical runtime: the ThinkPad/Fedora workstation.
 | 8 | Hub-and-spoke without manual linking | One canonical node plus automatic mirrors, never copied text. |
 | 9 | Resurfacing | `wf resurface --older-than-days ...`. |
 | 10 | Project scaffolding/index | `wf projects --root ~/projects`; records local path as text and Git remote when available. |
-| 11 | Codex/roadmap events | `wf ingest generic/github ...`; source adapters can emit the same JSON envelope. |
+| 11 | Codex/roadmap events | `wf roadmap-sync` mirrors the complete canonical roadmap with tags/backlinks and turns exact `running`/`PASS`/`FAIL` child nodes into single-writer mutations. Generic events remain available through `wf ingest`. |
 | 12 | ChatGPT → Workflowy | `wf chatgpt` extracts one conversation from `conversations.json`; `browser-extension/` exports the current open chat privately through localhost. |
 | 13 | GitHub → Workflowy | `wf ingest github event.json`, idempotent through event IDs/hashes. |
 | 14 | ActivityWatch → Workflowy | `wf ingest activitywatch event.json`. |
@@ -49,7 +49,7 @@ Use one canonical runtime: the ThinkPad/Fedora workstation.
 | 21 | Completed-task cleanup | `wf archive-completed`; report-only unless `--apply`. |
 | 22 | Weekly review | `wf weekly-review` + optional systemd timer. |
 | 23 | Dashboards | Mirrors are exposed as a primitive (`wf mirror`); dashboard policy stays configuration, not hard-coded structure. |
-| 24 | Workflowy as automation panel | `wf control --parent ...`: only allowlisted `RUN: action` nodes execute commands, without a shell. |
+| 24 | Workflowy as automation panel | `wf roadmap-sync` is the dedicated roadmap control surface; `wf control --parent ...` remains for explicitly allowlisted generic `RUN: action` commands, without a shell. |
 | 25 | Human-in-the-loop | Actions execute only after an explicit `RUN:` node exists; unknown/non-allowlisted requests remain untouched. |
 | 26 | CLI | `wf` is the common interface for humans, scripts and agents. |
 | 27 | One local API layer | `wf serve` exposes a loopback-only capture endpoint; authenticated Workflowy access stays server-side. |
