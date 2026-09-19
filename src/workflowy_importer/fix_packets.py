@@ -21,6 +21,8 @@ _BRANCH_RE = re.compile(r"(?im)\bbranch\s*[:=]\s*[`*_~]*([A-Za-z0-9._/-]+)")
 _PR_RE = re.compile(r"(?i)\b(?:PR|pull request)\s*[#:]?\s*(\d+)")
 _COMMIT_RE = re.compile(r"\b[0-9a-f]{7,40}\b", re.I)
 
+_TERMINAL_OUTCOMES = {"PASS", "BLOCKED", "FAIL", "CANCELLED", "UNKNOWN"}
+
 
 def _safe_text(value: object, *, limit: int = 360) -> str:
     text = " ".join(str(value or "").replace("\\_", "_").split())
@@ -79,6 +81,40 @@ def _candidate_metrics(published_root: Path, prompt_id: str, outcome: str) -> li
             continue
         candidates.append(metrics)
     return candidates
+
+
+def load_latest_terminal_outcome(
+    prompt_id: str,
+    *,
+    published_root: Path = DEFAULT_PUBLISHED_ROOT,
+) -> str | None:
+    """Return the newest finished Codex outcome published locally for a prompt."""
+    if not re.fullmatch(r"\d{6}", prompt_id):
+        return None
+    cycles = published_root.expanduser() / "prompts" / prompt_id / "cycles"
+    if not cycles.is_dir():
+        return None
+
+    latest_key: tuple[str, str] | None = None
+    latest_outcome: str | None = None
+    for path in cycles.glob("*/metrics.json"):
+        try:
+            metrics = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(metrics, dict):
+            continue
+        if str(metrics.get("prompt_id") or "") != prompt_id:
+            continue
+        outcome = str(metrics.get("status") or "").upper()
+        ended_at = str(metrics.get("timestamp_end_utc") or "")
+        if outcome not in _TERMINAL_OUTCOMES or not ended_at:
+            continue
+        key = (ended_at, str(metrics.get("cycle_key") or ""))
+        if latest_key is None or key > latest_key:
+            latest_key = key
+            latest_outcome = outcome
+    return latest_outcome
 
 
 def load_fix_packet(
