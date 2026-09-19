@@ -207,7 +207,11 @@ class RoadmapBridgeTests(unittest.TestCase):
         self.assertEqual([("followup", "123456")], prompts[1].relations_in)
 
     def test_running_last_blocked_outcome_is_needs_fix_before_canonical_finish(self):
-        prompt = read_roadmap_db(roadmap_bytes("running"))[0]
+        prompt = next(
+            prompt
+            for prompt in read_roadmap_db(roadmap_bytes("running"))
+            if prompt.prompt_id == "123456"
+        )
         prompt.last_outcome = "BLOCKED"
         self.assertEqual(
             "blocked",
