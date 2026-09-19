@@ -228,7 +228,7 @@ La dashboard combina roadmap + stato reale di `github-autosync` + binding di `ch
 - `Done`: PASS canonico;
 - `Archive`: stati storici/non operativi.
 
-Ogni prompt espone azioni operative nella nota: `🚀 Apri`, `📋 Copia`, `🌐 ChatGPT` quando esiste il binding Chrome, e il deep link `🧠 Codex` quando CCS lo conosce. `PROMPT_ID` è la chiave comune e non viene mai dedotto da URL o titoli.
+Ogni prompt espone azioni operative nella nota: `🚀 Apri`, `📋 Copia`, `🔎 Verify`, `🌐 ChatGPT` quando esiste il binding Chrome, e il deep link `🧠 Codex` quando CCS lo conosce. `🔎 Verify` interroga il control plane CCS e mostra direttamente nel cockpit se il runtime del binding è verificato oppure quale gate manca. `PROMPT_ID` è la chiave comune e non viene mai dedotto da URL o titoli.
 
 Sotto un prompt usa **un solo nodo figlio di stato**:
 
