@@ -18,17 +18,33 @@ from .links import workflowy_url
 ROADMAP_NAMESPACE = "codex-roadmap"
 ROADMAP_ROOT_KEY = "__root__"
 GROUP_PREFIX = "__group__:"
-COMMANDS = {"running": "running", "PASS": "PASS", "FAIL": "FAIL"}
-GROUPS = (
-    "pending",
-    "running",
-    "completed",
-    "failed",
-    "blocked",
-    "cancelled",
-    "superseded",
-    "unknown",
+COMMANDS = {
+    "running": "running",
+    "P": "PASS",
+    "PASS": "PASS",
+    "B": "BLOCKED",
+    "BLOCKED": "BLOCKED",
+    "F": "FAIL",
+    "FAIL": "FAIL",
+}
+DASHBOARD_GROUPS = (
+    ("pending", "Ready"),
+    ("running", "Running"),
+    ("blocked", "Needs fix"),
+    ("completed", "Done"),
+    ("unknown", "Archive"),
 )
+STATUS_GROUP_KEY = {
+    "pending": "pending",
+    "running": "running",
+    "blocked": "blocked",
+    "failed": "blocked",
+    "completed": "completed",
+    "cancelled": "unknown",
+    "superseded": "unknown",
+    "unknown": "unknown",
+}
+LEGACY_GROUP_KEYS = ("failed", "cancelled", "superseded")
 
 
 @dataclass(slots=True)
@@ -165,16 +181,7 @@ def _tag(value: str, prefix: str) -> str:
 
 
 def prompt_name(prompt: RoadmapPrompt) -> str:
-    tags = [
-        "#roadmap",
-        _tag(prompt.status, "status"),
-        _tag(prompt.project_name or "unknown", "project"),
-    ]
-    return " ".join(
-        part
-        for part in (f"[{prompt.prompt_id}] {prompt.title}", *tags)
-        if part
-    )
+    return f"[{prompt.prompt_id}] {prompt.title}"
 
 
 def _mapped_link(prompt_id: str, node_ids: dict[str, str]) -> str:
@@ -235,8 +242,20 @@ def prompt_note(
             )
         )
     lines.append(
-        "Comando manuale: usa un solo figlio esatto tra running, PASS, FAIL."
+        "Stato manuale: P=PASS · B=BLOCKED · F=FAIL "
+        "(accettati anche PASS/BLOCKED/FAIL)."
     )
+    tags = " ".join(
+        tag
+        for tag in (
+            "#roadmap",
+            _tag(prompt.status, "status"),
+            _tag(prompt.project_name or "unknown", "project"),
+        )
+        if tag
+    )
+    if tags:
+        lines.append(tags)
     return "\n".join(lines)
 
 
@@ -276,8 +295,15 @@ def mutation_for_command(
             }
         ]
 
-    target = "completed" if command == "PASS" else "failed"
-    outcome = command
+    targets = {
+        "PASS": "completed",
+        "BLOCKED": "blocked",
+        "FAIL": "failed",
+    }
+    try:
+        target = targets[command]
+    except KeyError as exc:
+        raise ValueError(f"unknown_roadmap_command:{command}") from exc
     if status == target:
         return []
     if status not in {"pending", "running"}:
@@ -414,11 +440,8 @@ def _submit_with_local_writer(
     return result
 
 
-def _fix_prompt_text(prompt_id: str) -> str:
-    return (
-        f"il prompt {prompt_id} è FAIL: applica il fix nel codice e nella roadmap, "
-        "usando il writer unico; lascia nella roadmap solo l'eventuale lavoro Codex-only"
-    )
+def _fix_prompt_text(prompt_id: str, outcome: str) -> str:
+    return f"FIX {outcome[0]} · {prompt_id} #needs_fix"
 
 
 def sync_roadmap(
@@ -458,21 +481,64 @@ def sync_roadmap(
         existing_ids,
         key=ROADMAP_ROOT_KEY,
         parent_id=parent,
-        name="Codex roadmap #roadmap",
-        note="Proiezione automatica di codex-roadmap. roadmap.sqlite resta la fonte canonica.",
+        name="Codex",
+        note="Dashboard operativa della roadmap Codex. roadmap.sqlite resta la fonte canonica.",
     )
+    current_root = by_id.get(root_id)
+    if current_root:
+        if str(current_root.get("name") or "") != "Codex":
+            client.update_node(
+                root_id,
+                "Codex",
+                note="Dashboard operativa della roadmap Codex. roadmap.sqlite resta la fonte canonica.",
+            )
+        elif str(current_root.get("note") or "") != (
+            "Dashboard operativa della roadmap Codex. roadmap.sqlite resta la fonte canonica."
+        ):
+            client.update_node(
+                root_id,
+                "Codex",
+                note="Dashboard operativa della roadmap Codex. roadmap.sqlite resta la fonte canonica.",
+            )
+
+    group_counts = {key: 0 for key, _ in DASHBOARD_GROUPS}
+    for prompt in prompts:
+        group_counts[STATUS_GROUP_KEY.get(prompt.status, "unknown")] += 1
 
     group_ids: dict[str, str] = {}
-    for status in GROUPS:
+    for key, label in DASHBOARD_GROUPS:
+        desired_name = f"{label} ({group_counts[key]})"
         group_id, _ = _ensure_mapped_node(
             client,
             db,
             existing_ids,
-            key=GROUP_PREFIX + status,
+            key=GROUP_PREFIX + key,
             parent_id=root_id,
-            name=f"{status.capitalize()} {_tag(status, 'status')} #roadmap",
+            name=desired_name,
         )
-        group_ids[status] = group_id
+        group_ids[key] = group_id
+        current_group = by_id.get(group_id)
+        if current_group:
+            if str(current_group.get("name") or "") != desired_name:
+                client.update_node(group_id, desired_name)
+            if str(current_group.get("parent_id") or "") != root_id:
+                client.move_node(group_id, root_id, position="bottom")
+
+    archive_id = group_ids["unknown"]
+    for legacy_key in LEGACY_GROUP_KEYS:
+        mapped = _mapping_get(db, GROUP_PREFIX + legacy_key)
+        if not mapped or mapped[0] not in existing_ids:
+            continue
+        legacy_id = mapped[0]
+        if legacy_id in group_ids.values():
+            continue
+        current_group = by_id.get(legacy_id)
+        if current_group:
+            desired_name = f"Legacy {legacy_key}"
+            if str(current_group.get("name") or "") != desired_name:
+                client.update_node(legacy_id, desired_name)
+            if str(current_group.get("parent_id") or "") != archive_id:
+                client.move_node(legacy_id, archive_id, position="bottom")
 
     node_ids: dict[str, str] = {}
     created = 0
@@ -482,7 +548,7 @@ def sync_roadmap(
             node_ids[prompt.prompt_id] = mapped[0]
             continue
         node_id = client.create_node(
-            group_ids.get(prompt.status, group_ids["unknown"]),
+            group_ids[STATUS_GROUP_KEY.get(prompt.status, "unknown")],
             prompt_name(prompt),
             position="bottom",
         )
@@ -530,8 +596,8 @@ def sync_roadmap(
                 request_key,
             )
             submitted += 1
-        if command == "FAIL":
-            wanted = _fix_prompt_text(prompt_id)
+        if command in {"BLOCKED", "FAIL"}:
+            wanted = _fix_prompt_text(prompt_id, command)
             if not any(
                 str(child.get("name") or "").strip() == wanted
                 for child in children
@@ -543,7 +609,7 @@ def sync_roadmap(
     moved = 0
     for prompt in prompts:
         node_id = node_ids[prompt.prompt_id]
-        desired_parent = group_ids.get(prompt.status, group_ids["unknown"])
+        desired_parent = group_ids[STATUS_GROUP_KEY.get(prompt.status, "unknown")]
         desired_name = prompt_name(prompt)
         desired_note = prompt_note(
             prompt,
