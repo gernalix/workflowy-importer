@@ -19,6 +19,7 @@ ROADMAP_NAMESPACE = "codex-roadmap"
 ROADMAP_ROOT_KEY = "__root__"
 GROUP_PREFIX = "__group__:"
 COMMANDS = {
+    "R": "running",
     "running": "running",
     "P": "PASS",
     "PASS": "PASS",
@@ -242,8 +243,7 @@ def prompt_note(
             )
         )
     lines.append(
-        "Stato manuale: P=PASS · B=BLOCKED · F=FAIL "
-        "(accettati anche PASS/BLOCKED/FAIL)."
+        "Stato manuale: R=running · P=PASS · B=BLOCKED · F=FAIL."
     )
     tags = " ".join(
         tag
