@@ -239,6 +239,9 @@ def dashboard_group(
     if prompt.status in {"blocked", "failed"}:
         return "blocked"
     if prompt.status == "completed":
+        pipeline_state = str((pipeline or {}).get("pipeline_state") or "")
+        if _external_repo_task(prompt) and pipeline_state not in {"", "done"}:
+            return "blocked"
         return "completed"
     if prompt.status in {"cancelled", "superseded", "unknown"}:
         return "unknown"
@@ -320,6 +323,13 @@ def prompt_note(
             lines.append(
                 f"Coda integrazione: {pipeline['queue_position']}/{pipeline['queue_size']}"
             )
+        pipeline_state = str(pipeline.get("pipeline_state") or "")
+        if prompt.status == "completed" and pipeline_state not in {"", "done"}:
+            lines.append(
+                f"⚠ State mismatch: roadmap=completed · pipeline={pipeline_state}"
+            )
+        elif prompt.status == "running" and pipeline_state == "done":
+            lines.append("Finalizzazione roadmap PASS in coda")
     if prompt.dependencies:
         lines.append(
             "Dipende da: "
