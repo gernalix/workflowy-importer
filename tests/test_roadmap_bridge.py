@@ -103,7 +103,7 @@ class FakeClient:
         position: str = "bottom",
         note: str | None = None,
     ) -> str:
-        del layout_mode, position
+        del position
         self.counter += 1
         node_id = f"00000000-0000-0000-0000-{self.counter:012d}"
         self.nodes.append(
@@ -112,6 +112,7 @@ class FakeClient:
                 "parent_id": parent_id,
                 "name": name,
                 "note": note,
+                "data": {"layoutMode": layout_mode},
                 "modifiedAt": 1_790_000_000,
             }
         )
@@ -125,13 +126,14 @@ class FakeClient:
         note: str | None = None,
         layout_mode: str | None = None,
     ) -> None:
-        del layout_mode
         for node in self.nodes:
             if node["id"] == node_id:
                 if name is not None:
                     node["name"] = name
                 if note is not None:
                     node["note"] = note
+                if layout_mode is not None:
+                    node.setdefault("data", {})["layoutMode"] = layout_mode
                 return
         raise AssertionError(f"missing node {node_id}")
 
@@ -244,7 +246,7 @@ class RoadmapBridgeTests(unittest.TestCase):
             relations_out=[],
             relations_in=[],
         )
-        self.assertEqual("[123456] No project", prompt_name(prompt))
+        self.assertEqual("[123456] <b>No project</b>", prompt_name(prompt))
 
     def test_terminal_command_can_follow_pending_atomically(self):
         prompt = read_roadmap_db(roadmap_bytes())[0]
@@ -273,7 +275,10 @@ class RoadmapBridgeTests(unittest.TestCase):
                 node for node in client.nodes
                 if str(node["name"]).startswith("[123456]")
             )
-            self.assertEqual("[123456] Parent", prompt_node["name"])
+            self.assertEqual("[123456] 🟢 <b>Parent</b>", prompt_node["name"])
+            self.assertIn("🟢 Questo prompt è pronto.", prompt_node["note"])
+            self.assertIn("🟠 Link Chrome mancante. Vuoi aggiungerlo?", prompt_node["note"])
+            self.assertIn("🟠 Link Codex mancante. Vuoi aggiungerlo?", prompt_node["note"])
             self.assertIn("#status_pending", prompt_node["note"])
             self.assertIn("Sblocca:", prompt_node["note"])
             self.assertIn("Relazioni →:", prompt_node["note"])
@@ -285,6 +290,11 @@ class RoadmapBridgeTests(unittest.TestCase):
             self.assertIn("Needs fix (0)", group_names)
             self.assertIn("Done (0)", group_names)
             self.assertIn("Archive (0)", group_names)
+            root = next(node for node in client.nodes if node["name"] == "Codex")
+            ready = next(node for node in client.nodes if node["name"] == "Ready (1)")
+            self.assertEqual("h1", root["data"]["layoutMode"])
+            self.assertEqual("h2", ready["data"]["layoutMode"])
+            self.assertEqual("bullets", prompt_node["data"]["layoutMode"])
 
             client.create_node(prompt_node["id"], "R")
             second = sync_roadmap(
@@ -427,6 +437,108 @@ class RoadmapBridgeTests(unittest.TestCase):
                 prompt_node["note"],
             )
             self.assertIn("🧠 Codex URL: codex://threads/thread-1", prompt_node["note"])
+            db.close()
+
+    def test_blocked_prompt_talks_in_plain_language_from_fix_packet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(Path(tmp) / "cache.sqlite")
+            client = FakeClient()
+            packet = {
+                "prompt_id": "123456",
+                "outcome": "BLOCKED",
+                "blocker": "Runtime heartbeat is stale; GNOME companion did not answer.",
+                "next_action": "Restart the local companion and run Verify again.",
+                "report_ref": "codex-usage:test:abcd",
+            }
+            sync_roadmap(
+                client,
+                db,
+                raw_roadmap_db=roadmap_bytes("blocked"),
+                submitter=lambda doc, key: {"status": "ok"},
+                fix_packet_loader=lambda prompt_id, outcome: (
+                    packet if prompt_id == "123456" and outcome == "BLOCKED" else None
+                ),
+                ccs_bindings={
+                    "123456": {
+                        "context_id": "ctx-1",
+                        "url": "https://chatgpt.com/c/example",
+                        "codex_thread": "thread-1",
+                        "codex_deep_link": "codex://threads/thread-1",
+                    }
+                },
+            )
+            prompt_node = next(
+                node for node in client.nodes
+                if str(node["name"]).startswith("[123456]")
+            )
+            self.assertIn("🔴", prompt_node["name"])
+            self.assertIn("<b>Parent</b>", prompt_node["name"])
+            self.assertEqual("h3", prompt_node["data"]["layoutMode"])
+            self.assertIn(
+                "🔴 Codex si è fermato prima di completare il lavoro con PASS.",
+                prompt_node["note"],
+            )
+            self.assertIn(
+                "💬 In breve: Runtime heartbeat is stale; GNOME companion did not answer.",
+                prompt_node["note"],
+            )
+            self.assertIn(
+                "👉 Prossimo passo consigliato: Restart the local companion and run Verify again.",
+                prompt_node["note"],
+            )
+            db.close()
+
+    def test_blocked_without_packet_refuses_to_invent_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(Path(tmp) / "cache.sqlite")
+            client = FakeClient()
+            sync_roadmap(
+                client,
+                db,
+                raw_roadmap_db=roadmap_bytes("blocked"),
+                submitter=lambda doc, key: {"status": "ok"},
+                fix_packet_loader=lambda _prompt_id, _outcome: None,
+            )
+            prompt_node = next(
+                node for node in client.nodes
+                if str(node["name"]).startswith("[123456]")
+            )
+            self.assertIn(
+                "Non ho ancora un riassunto affidabile del motivo",
+                prompt_node["note"],
+            )
+            db.close()
+
+    def test_terminal_blocked_packet_publishes_without_manual_b_child(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(Path(tmp) / "cache.sqlite")
+            client = FakeClient()
+            submitted: list[tuple[dict, str]] = []
+            packet = {
+                "schema": "codex-roadmap.fix-packet.v1",
+                "prompt_id": "123456",
+                "outcome": "BLOCKED",
+                "blocker": "One concrete blocker.",
+                "work_state": {},
+                "next_action": "Do one concrete repair.",
+                "report_ref": "codex-usage:cycle-x:hash-x",
+            }
+            result = sync_roadmap(
+                client,
+                db,
+                raw_roadmap_db=roadmap_bytes("blocked"),
+                submitter=lambda doc, key: submitted.append((doc, key)) or {"status": "ok"},
+                fix_packet_loader=lambda prompt_id, outcome: (
+                    packet if prompt_id == "123456" and outcome == "BLOCKED" else None
+                ),
+            )
+            self.assertEqual(1, result["fix_packets_submitted"])
+            self.assertTrue(
+                any(
+                    doc["actor"] == "workflowy-fix-packet"
+                    for doc, _key in submitted
+                )
+            )
             db.close()
 
     def test_repo_pass_override_requires_integrated_pipeline(self):
