@@ -899,9 +899,11 @@ def sync_roadmap(
         if mapped and mapped[0] in existing_ids:
             node_ids[prompt.prompt_id] = mapped[0]
             continue
+        group = prompt_groups[prompt.prompt_id]
         node_id = client.create_node(
-            group_ids[prompt_groups[prompt.prompt_id]],
-            prompt_name(prompt),
+            group_ids[group],
+            prompt_name(prompt, group),
+            layout_mode="h3" if group == "blocked" else "bullets",
             position="bottom",
         )
         _mapping_set(db, prompt.prompt_id, node_id, {})
@@ -919,6 +921,46 @@ def sync_roadmap(
         )
     )
     packet_loader = fix_packet_loader or load_fix_packet
+    display_packets: dict[str, dict] = {
+        prompt.prompt_id: prompt.fix_packet
+        for prompt in prompts
+        if isinstance(prompt.fix_packet, dict)
+    }
+
+    # Publish and display terminal B/F context even when the status came from
+    # Codex directly rather than a manual Workflowy child command.
+    for prompt in prompts:
+        outcome = str(prompt.last_outcome or "").upper()
+        if prompt.status == "blocked":
+            outcome = "BLOCKED"
+        elif prompt.status == "failed":
+            outcome = "FAIL"
+        if outcome not in {"BLOCKED", "FAIL"}:
+            continue
+        packet = packet_loader(prompt.prompt_id, outcome)
+        if not packet:
+            continue
+        display_packets[prompt.prompt_id] = packet
+        operation, request_key = packet_mutation(packet)
+        already_sent = db.execute(
+            "SELECT 1 FROM events WHERE source=? AND external_key=?",
+            ("roadmap_fix_packet", request_key),
+        ).fetchone()
+        if already_sent:
+            continue
+        submit(
+            {
+                "schema": "codex-roadmap.mutation.v1",
+                "actor": "workflowy-fix-packet",
+                "operations": [operation],
+            },
+            request_key,
+        )
+        db.execute(
+            "INSERT INTO events(source,external_key,payload_json) VALUES(?,?,?)",
+            ("roadmap_fix_packet", request_key, json.dumps(packet, sort_keys=True)),
+        )
+        fix_packets_submitted += 1
 
     for prompt_id, node_id in node_ids.items():
         prompt = prompt_by_id[prompt_id]
@@ -998,8 +1040,10 @@ def sync_roadmap(
     moved = 0
     for prompt in prompts:
         node_id = node_ids[prompt.prompt_id]
-        desired_parent = group_ids[prompt_groups[prompt.prompt_id]]
-        desired_name = prompt_name(prompt)
+        group = prompt_groups[prompt.prompt_id]
+        desired_parent = group_ids[group]
+        desired_name = prompt_name(prompt, group)
+        desired_layout = "h3" if group == "blocked" else "bullets"
         desired_note = prompt_note(
             prompt,
             node_ids,
@@ -1007,23 +1051,37 @@ def sync_roadmap(
             branch=branch,
             pipeline=pipeline_status.get(prompt.prompt_id),
             binding=ccs_bindings.get(prompt.prompt_id),
+            group=group,
+            fix_packet=display_packets.get(prompt.prompt_id),
         )
         current = by_id.get(node_id)
         if current:
             current_name = str(current.get("name") or "")
             current_note = str(current.get("note") or "")
-            if current_name != desired_name or current_note != desired_note:
+            current_data = current.get("data") if isinstance(current.get("data"), dict) else {}
+            current_layout = str(current_data.get("layoutMode") or "bullets")
+            if (
+                current_name != desired_name
+                or current_note != desired_note
+                or current_layout != desired_layout
+            ):
                 client.update_node(
                     node_id,
                     desired_name,
                     note=desired_note,
+                    layout_mode=desired_layout,
                 )
                 updated += 1
             if str(current.get("parent_id") or "") != desired_parent:
                 client.move_node(node_id, desired_parent, position="bottom")
                 moved += 1
         else:
-            client.update_node(node_id, desired_name, note=desired_note)
+            client.update_node(
+                node_id,
+                desired_name,
+                note=desired_note,
+                layout_mode=desired_layout,
+            )
             updated += 1
 
     db.commit()
