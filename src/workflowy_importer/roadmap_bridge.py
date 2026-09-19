@@ -510,7 +510,8 @@ def sync_roadmap(
             continue
         command, command_node = found
         try:
-            operations = mutation_for_command(prompt, command)\n        except ValueError:
+            operations = mutation_for_command(prompt, command)
+        except ValueError:
             warnings += 1
             continue
         if operations:
