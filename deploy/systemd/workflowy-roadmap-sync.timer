@@ -3,7 +3,7 @@ Description=Keep codex-roadmap and Workflowy status controls in sync
 
 [Timer]
 OnBootSec=30s
-OnUnitActiveSec=30s
+OnUnitInactiveSec=75s
 AccuracySec=5s
 Persistent=true
 
