@@ -99,11 +99,15 @@ def fetch_remote_roadmap_db(
         "api",
         f"repos/{repository}/contents/roadmap.sqlite?ref={branch}",
     )
+    content = str(payload.get("content") or "").replace("\n", "")
+    if not content:
+        blob_sha = payload.get("sha")
+        if not isinstance(blob_sha, str) or not blob_sha:
+            raise RuntimeError("remote_roadmap_db_invalid")
+        payload = _gh_json("api", f"repos/{repository}/git/blobs/{blob_sha}")
+        content = str(payload.get("content") or "").replace("\n", "")
     try:
-        return base64.b64decode(
-            str(payload["content"]).replace("\n", ""),
-            validate=True,
-        )
+        return base64.b64decode(content, validate=True)
     except (KeyError, ValueError) as exc:
         raise RuntimeError("remote_roadmap_db_invalid") from exc
 
