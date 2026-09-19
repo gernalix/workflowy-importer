@@ -18,7 +18,7 @@ from .links import workflowy_url
 ROADMAP_NAMESPACE = "codex-roadmap"
 ROADMAP_ROOT_KEY = "__root__"
 GROUP_PREFIX = "__group__:"
-COMMANDS = {"running": "running", "pass": "PASS", "fail": "FAIL"}
+COMMANDS = {"running": "running", "PASS": "PASS", "FAIL": "FAIL"}
 GROUPS = (
     "pending",
     "running",
@@ -165,9 +165,11 @@ def _tag(value: str, prefix: str) -> str:
 
 
 def prompt_name(prompt: RoadmapPrompt) -> str:
-    tags = ["#roadmap", _tag(prompt.status, "status")]
-    if prompt.project_name:
-        tags.append(_tag(prompt.project_name, "project"))
+    tags = [
+        "#roadmap",
+        _tag(prompt.status, "status"),
+        _tag(prompt.project_name or "unknown", "project"),
+    ]
     return " ".join(
         part
         for part in (f"[{prompt.prompt_id}] {prompt.title}", *tags)
@@ -241,7 +243,7 @@ def prompt_note(
 def command_from_children(children: list[dict]) -> tuple[str, dict] | None:
     matches: list[tuple[str, dict]] = []
     for node in children:
-        name = str(node.get("name") or "").strip().casefold()
+        name = str(node.get("name") or "")
         command = COMMANDS.get(name)
         if command:
             matches.append((command, node))
