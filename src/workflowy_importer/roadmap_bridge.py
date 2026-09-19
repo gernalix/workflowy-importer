@@ -310,6 +310,7 @@ def prompt_note(
         lines.append(f"Spiegazione: {prompt.explanation}")
     lines.append(f"🚀 Apri: {_action_url(prompt.prompt_id, 'launch')}")
     lines.append(f"📋 Copia: {_action_url(prompt.prompt_id, 'copy')}")
+    lines.append(f"🔎 Verify: {_action_url(prompt.prompt_id, 'verify')}")
     if binding and binding.get("context_id"):
         lines.append(f"🌐 ChatGPT: {_action_url(prompt.prompt_id, 'chrome')}")
     if binding and binding.get("codex_deep_link"):

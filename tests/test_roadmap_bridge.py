@@ -337,6 +337,7 @@ class RoadmapBridgeTests(unittest.TestCase):
             self.assertIn("📋 Copia:", prompt_node["note"])
             self.assertIn("🌐 ChatGPT:", prompt_node["note"])
             self.assertIn("codex://threads/thread-1", prompt_node["note"])
+            self.assertIn("🔎 Verify: http://127.0.0.1:43817/ui/prompt/123456/verify", prompt_node["note"])
             self.assertIn("Coda integrazione: 1/2", prompt_node["note"])
             db.close()
 
