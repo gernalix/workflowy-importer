@@ -4,7 +4,9 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+from workflowy_importer import bridge_cli
 from workflowy_importer.cache import connect
 from workflowy_importer.roadmap_bridge import (
     RoadmapPrompt,
@@ -130,6 +132,25 @@ class FakeClient:
 
 
 class RoadmapBridgeTests(unittest.TestCase):
+    def test_cli_dispatches_roadmap_sync(self):
+        args = bridge_cli.build_parser().parse_args(["roadmap-sync"])
+        db = MagicMock()
+        client = MagicMock()
+        client_context = MagicMock()
+        client_context.__enter__.return_value = client
+        with patch.object(bridge_cli, "_db", return_value=db), patch.object(
+            bridge_cli, "_client", return_value=client_context
+        ), patch.object(bridge_cli, "sync_roadmap", return_value={"prompts": 2}) as sync:
+            self.assertEqual(0, bridge_cli.run(args))
+        sync.assert_called_once_with(
+            client,
+            db,
+            parent="inbox",
+            repository="gernalix/codex-roadmap",
+            branch="main",
+            roadmap_dir=Path("~/projects/codex-roadmap"),
+        )
+
     def test_projection_contains_links_tags_and_dependencies(self):
         prompts = read_roadmap_db(roadmap_bytes())
         self.assertEqual(["123456", "654321"], [p.prompt_id for p in prompts])

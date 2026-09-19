@@ -24,6 +24,7 @@ from .chatgpt import conversation_to_markdown, load_conversation
 from .credentials import CredentialError, DEFAULT_SECRET_FILE, load_api_key
 from .control import run_control_actions
 from .links import workflowy_url
+from .roadmap_bridge import sync_roadmap
 
 DEFAULT_CACHE = Path("~/.local/share/workflowy-bridge/cache.sqlite3").expanduser()
 DEFAULT_RULES = Path("~/.config/workflowy-bridge/rules.json").expanduser()
