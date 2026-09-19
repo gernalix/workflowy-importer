@@ -7,8 +7,10 @@ from pathlib import Path
 
 from workflowy_importer.cache import connect
 from workflowy_importer.roadmap_bridge import (
+    RoadmapPrompt,
     command_from_children,
     mutation_for_command,
+    prompt_name,
     read_roadmap_db,
     sync_roadmap,
 )
@@ -137,8 +139,10 @@ class RoadmapBridgeTests(unittest.TestCase):
         self.assertEqual([("followup", "123456")], prompts[1].relations_in)
 
     def test_command_is_strict_and_ambiguous_fails_closed(self):
-        found = command_from_children([{"name": " PASS ", "id": "x"}])
+        found = command_from_children([{"name": "PASS", "id": "x"}])
         self.assertEqual("PASS", found[0])
+        self.assertIsNone(command_from_children([{"name": " PASS ", "id": "x"}]))
+        self.assertIsNone(command_from_children([{"name": "pass", "id": "x"}]))
         with self.assertRaises(ValueError):
             command_from_children(
                 [
@@ -146,6 +150,25 @@ class RoadmapBridgeTests(unittest.TestCase):
                     {"name": "PASS", "id": "b"},
                 ]
             )
+
+    def test_prompt_without_project_keeps_required_project_tag(self):
+        prompt = RoadmapPrompt(
+            prompt_id="123456",
+            title="No project",
+            status="unknown",
+            project_name=None,
+            repo=None,
+            current_path="",
+            explanation="",
+            model=None,
+            reasoning=None,
+            queue_position=None,
+            dependencies=[],
+            dependents=[],
+            relations_out=[],
+            relations_in=[],
+        )
+        self.assertIn("#project_unknown", prompt_name(prompt))
 
     def test_terminal_command_can_follow_pending_atomically(self):
         prompt = read_roadmap_db(roadmap_bytes())[0]
