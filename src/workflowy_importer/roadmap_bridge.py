@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import html
 import json
 import re
 import sqlite3
@@ -316,8 +317,132 @@ def _tag(value: str, prefix: str) -> str:
     return f"#{prefix}_{cleaned}" if cleaned else ""
 
 
-def prompt_name(prompt: RoadmapPrompt) -> str:
-    return f"[{prompt.prompt_id}] {prompt.title}"
+DASHBOARD_MARKERS = {
+    "ready": "🟢",
+    "waiting": "🟡",
+    "running": "🔵",
+    "integration": "🟣",
+    "blocked": "🔴",
+    "completed": "✅",
+    "unknown": "⚪",
+}
+
+
+def prompt_name(prompt: RoadmapPrompt, group: str | None = None) -> str:
+    marker = DASHBOARD_MARKERS.get(group or "", "")
+    marker_text = f"{marker} " if marker else ""
+    return (
+        f"[{prompt.prompt_id}] {marker_text}"
+        f"<b>{html.escape(prompt.title)}</b>"
+    )
+
+
+def _human_text(value: object, *, limit: int = 280) -> str:
+    text = " ".join(str(value or "").replace("\\_", "_").split()).strip()
+    text = re.sub(
+        r"^(?:BLOCKER|ERROR|NEXT_ACTION|RESULT)\s*[:=]\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if re.fullmatch(r"[A-Za-z0-9_.:/-]+", text or ""):
+        text = text.replace("_", " ")
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + "…"
+    return text
+
+
+def _talking_lines(
+    prompt: RoadmapPrompt,
+    *,
+    group: str,
+    pipeline: dict | None,
+    binding: dict | None,
+    fix_packet: dict | None,
+) -> list[str]:
+    pipeline = pipeline or {}
+    binding = binding or {}
+    packet = fix_packet or prompt.fix_packet
+    pipeline_state = str(pipeline.get("pipeline_state") or "")
+    outcome = str(prompt.last_outcome or "").upper()
+
+    lines: list[str] = []
+    problem = (
+        prompt.status in {"blocked", "failed"}
+        or outcome in {"BLOCKED", "FAIL", "CANCELLED", "UNKNOWN"}
+        or pipeline_state == "needs-fix"
+    )
+
+    if prompt.status == "completed" and _external_repo_task(prompt) and pipeline_state not in {"", "done"}:
+        lines.append(
+            "🟠 Il prompt è PASS, ma l'integrazione del repository non è ancora chiusa."
+        )
+        lines.append(
+            "👉 Prossimo passo: lascia finire CI/merge; intervieni solo se passa a Needs fix."
+        )
+    elif problem:
+        if prompt.status == "failed" or outcome == "FAIL":
+            lines.append("🔴 Codex ha incontrato un errore e non è arrivato a PASS.")
+        elif outcome == "CANCELLED":
+            lines.append("🟠 L'ultima esecuzione Codex è stata interrotta prima del PASS.")
+        else:
+            lines.append("🔴 Codex si è fermato prima di completare il lavoro con PASS.")
+
+        if isinstance(packet, dict):
+            blocker = _human_text(packet.get("blocker"))
+            next_action = _human_text(packet.get("next_action"))
+            if blocker:
+                lines.append(f"💬 In breve: {blocker}")
+            if next_action:
+                lines.append(f"👉 Prossimo passo consigliato: {next_action}")
+        else:
+            lines.append(
+                "💬 Non ho ancora un riassunto affidabile del motivo, quindi non invento una causa."
+            )
+            lines.append(
+                "👉 Prossimo passo: apri la chat/report Codex associata e usa l'ultimo blocker concreto prima di rilanciare."
+            )
+    elif group == "integration":
+        lines.append(
+            "🟣 Codex ha finito la sua parte. Sto aspettando controlli e integrazione."
+        )
+        lines.append("👉 Per ora non devi fare nulla.")
+    elif group == "running":
+        lines.append("🔵 Codex sta lavorando su questo prompt.")
+        lines.append("👉 Per ora non devi fare nulla.")
+    elif group == "waiting":
+        unresolved = [str(dep) for dep in prompt.dependencies]
+        suffix = " · ".join(unresolved[:3])
+        if len(unresolved) > 3:
+            suffix += " · …"
+        lines.append(
+            "🟡 Questo prompt non è ancora pronto"
+            + (f": sta aspettando {suffix}." if suffix else ".")
+        )
+        lines.append("👉 Aspetta che le dipendenze passino.")
+    elif group == "ready":
+        lines.append("🟢 Questo prompt è pronto.")
+        lines.append("👉 Se vuoi avviarlo, usa 🚀 Apri.")
+    elif group == "completed":
+        lines.append("✅ PASS. Questo prompt è chiuso e non richiede altro.")
+    else:
+        lines.append("⚪ Non riesco a tradurre questo stato in un'azione sicura.")
+        lines.append("👉 Controlla lo stato canonico prima di intervenire.")
+
+    has_chrome = bool(binding.get("context_id") and binding.get("url"))
+    has_codex = bool(binding.get("codex_thread") and binding.get("codex_deep_link"))
+    if not has_chrome:
+        lines.append(
+            f"🟠 Link Chrome mancante. Vuoi aggiungerlo? → {_action_url(prompt.prompt_id, 'bind-chrome')}"
+        )
+    if not has_codex:
+        lines.append(
+            f"🟠 Link Codex mancante. Vuoi aggiungerlo? → {_action_url(prompt.prompt_id, 'bind-codex')}"
+        )
+    if has_chrome and has_codex:
+        lines.append("🔗 Chrome e Codex sono collegati.")
+
+    return lines
 
 
 def _mapped_link(prompt_id: str, node_ids: dict[str, str]) -> str:
@@ -335,11 +460,24 @@ def prompt_note(
     branch: str,
     pipeline: dict | None = None,
     binding: dict | None = None,
+    group: str | None = None,
+    fix_packet: dict | None = None,
 ) -> str:
-    lines = [
-        f"PROMPT_ID: {prompt.prompt_id}",
-        f"Stato canonico: {prompt.status}",
-    ]
+    effective_group = group or dashboard_group(prompt, {prompt.prompt_id: prompt}, pipeline)
+    lines = _talking_lines(
+        prompt,
+        group=effective_group,
+        pipeline=pipeline,
+        binding=binding,
+        fix_packet=fix_packet,
+    )
+    lines.extend(
+        [
+            "",
+            f"PROMPT_ID: {prompt.prompt_id}",
+            f"Stato canonico: {prompt.status}",
+        ]
+    )
     if prompt.project_name:
         lines.append(f"Progetto: {prompt.project_name}")
     if prompt.model or prompt.reasoning:
