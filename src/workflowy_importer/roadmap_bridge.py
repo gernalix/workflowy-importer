@@ -311,10 +311,24 @@ def prompt_note(
     lines.append(f"🚀 Apri: {_action_url(prompt.prompt_id, 'launch')}")
     lines.append(f"📋 Copia: {_action_url(prompt.prompt_id, 'copy')}")
     lines.append(f"🔎 Verify: {_action_url(prompt.prompt_id, 'verify')}")
-    if binding and binding.get("context_id"):
-        lines.append(f"🌐 ChatGPT: {_action_url(prompt.prompt_id, 'chrome')}")
-    if binding and binding.get("codex_deep_link"):
-        lines.append(f"🧠 Codex deep link: {binding['codex_deep_link']}")
+
+    binding = binding or {}
+    has_chrome = bool(binding.get("context_id") and binding.get("url"))
+    has_codex = bool(binding.get("codex_thread") and binding.get("codex_deep_link"))
+    if not (has_chrome and has_codex):
+        missing = []
+        if not has_chrome:
+            missing.append("Chrome")
+        if not has_codex:
+            missing.append("Codex")
+        lines.append(f"🔗 Collega: {_action_url(prompt.prompt_id, 'bind')}")
+        lines.append("Link mancanti: " + " · ".join(missing))
+
+    if has_chrome:
+        lines.append(f"🌐 Chrome URL: {binding['url']}")
+        lines.append(f"↗ Apri Chrome: {_action_url(prompt.prompt_id, 'chrome')}")
+    if has_codex:
+        lines.append(f"🧠 Codex URL: {binding['codex_deep_link']}")
         lines.append(f"↗ Apri Codex: {_action_url(prompt.prompt_id, 'codex')}")
     if prompt.current_path:
         lines.append(

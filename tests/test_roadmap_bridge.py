@@ -321,6 +321,8 @@ class RoadmapBridgeTests(unittest.TestCase):
                 ccs_bindings={
                     "123456": {
                         "context_id": "ctx-1",
+                        "url": "https://chatgpt.com/c/example",
+                        "codex_thread": "thread-1",
                         "codex_deep_link": "codex://threads/thread-1",
                     }
                 },
@@ -335,10 +337,43 @@ class RoadmapBridgeTests(unittest.TestCase):
             )
             self.assertEqual(integration["id"], prompt_node["parent_id"])
             self.assertIn("📋 Copia:", prompt_node["note"])
-            self.assertIn("🌐 ChatGPT:", prompt_node["note"])
-            self.assertIn("codex://threads/thread-1", prompt_node["note"])
+            self.assertIn("🌐 Chrome URL: https://chatgpt.com/c/example", prompt_node["note"])
+            self.assertIn("↗ Apri Chrome:", prompt_node["note"])
+            self.assertIn("🧠 Codex URL: codex://threads/thread-1", prompt_node["note"])
+            self.assertNotIn("🔗 Collega:", prompt_node["note"])
             self.assertIn("🔎 Verify: http://127.0.0.1:43817/ui/prompt/123456/verify", prompt_node["note"])
             self.assertIn("Coda integrazione: 1/2", prompt_node["note"])
+            db.close()
+
+    def test_incomplete_binding_exposes_late_link_recovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(Path(tmp) / "cache.sqlite")
+            client = FakeClient()
+            sync_roadmap(
+                client,
+                db,
+                raw_roadmap_db=roadmap_bytes(),
+                submitter=lambda doc, key: {"status": "ok"},
+                ccs_bindings={
+                    "123456": {
+                        "context_id": "ctx-1",
+                        "url": "https://chatgpt.com/c/example",
+                        "codex_thread": None,
+                        "codex_deep_link": None,
+                    }
+                },
+            )
+            prompt_node = next(
+                node for node in client.nodes
+                if str(node["name"]).startswith("[123456]")
+            )
+            self.assertIn(
+                "🔗 Collega: http://127.0.0.1:43817/ui/prompt/123456/bind",
+                prompt_node["note"],
+            )
+            self.assertIn("Link mancanti: Codex", prompt_node["note"])
+            self.assertIn("🌐 Chrome URL: https://chatgpt.com/c/example", prompt_node["note"])
+            self.assertNotIn("🧠 Codex URL:", prompt_node["note"])
             db.close()
 
     def test_repo_pass_override_requires_integrated_pipeline(self):
