@@ -253,6 +253,11 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument("--rules", type=Path, default=DEFAULT_RULES)
+    serve.add_argument(
+        "--roadmap-dir",
+        type=Path,
+        default=Path("~/projects/codex-roadmap"),
+    )
     return p
 
 
@@ -622,6 +627,7 @@ def run(args: argparse.Namespace) -> int:
                     host=args.host,
                     port=args.port,
                     rules_path=args.rules,
+                    roadmap_dir=args.roadmap_dir,
                 )
             else:
                 raise ValueError(
