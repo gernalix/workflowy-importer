@@ -149,14 +149,9 @@ class RoadmapBridgeTests(unittest.TestCase):
 
     def test_terminal_command_can_follow_pending_atomically(self):
         prompt = read_roadmap_db(roadmap_bytes())[0]
-        ops = mutation_for_command(
-            prompt,
-            "PASS",
-            ended_at="2026-09-19T01:00:00Z",
-            cycle_key="workflowy:123456:x:pass",
-        )
-        self.assertEqual(["status", "human_execution"], [op["op"] for op in ops])
-        self.assertEqual("PASS", ops[-1]["outcome"])
+        ops = mutation_for_command(prompt, "PASS")
+        self.assertEqual(["status", "terminal_request"], [op["op"] for op in ops])
+        self.assertEqual("completed", ops[-1]["status"])
 
     def test_sync_creates_whole_projection_and_submits_running(self):
         with tempfile.TemporaryDirectory() as tmp:
