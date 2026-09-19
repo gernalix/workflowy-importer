@@ -29,7 +29,7 @@ COMMANDS = {
     "FAIL": "FAIL",
 }
 DASHBOARD_GROUPS = (
-    ("pending", "Ready"),
+    ("pending", "Queue"),
     ("running", "Running"),
     ("blocked", "Needs fix"),
     ("completed", "Done"),
