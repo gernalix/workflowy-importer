@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import httpx
 from pathlib import Path
@@ -233,6 +234,28 @@ class ApiRetrySafetyTests(unittest.TestCase):
                 client.create_node("inbox", "test")
 
         self.assertEqual(calls, 1)
+
+    def test_429_without_retry_after_waits_full_rate_window(self) -> None:
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return httpx.Response(429, text="rate limited")
+            return httpx.Response(
+                200,
+                json={"node": {"id": "abc", "name": "ok"}},
+            )
+
+        with self._client_with_transport(handler) as client, patch(
+            "workflowy_importer.api.time.sleep"
+        ) as sleep:
+            node = client.get_node("abc")
+
+        self.assertEqual(node["id"], "abc")
+        self.assertEqual(calls, 2)
+        sleep.assert_called_once_with(60.0)
 
     def test_get_node_retries_safe_transient_failure(self) -> None:
         calls = 0
