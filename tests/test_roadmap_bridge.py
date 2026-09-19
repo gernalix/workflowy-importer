@@ -10,10 +10,11 @@ from unittest.mock import MagicMock, patch
 from workflowy_importer import bridge_cli
 from workflowy_importer.bridge import _roadmap_fix_packet, _roadmap_prompt_text
 from workflowy_importer.cache import connect
-from workflowy_importer.fix_packets import load_fix_packet
+from workflowy_importer.fix_packets import load_fix_packet, load_latest_terminal_outcome
 from workflowy_importer.roadmap_bridge import (
     RoadmapPrompt,
     command_from_children,
+    dashboard_group,
     mutation_for_command,
     prompt_name,
     read_roadmap_db,
@@ -204,6 +205,92 @@ class RoadmapBridgeTests(unittest.TestCase):
         self.assertEqual(["654321"], prompts[0].dependents)
         self.assertEqual([("followup", "654321")], prompts[0].relations_out)
         self.assertEqual([("followup", "123456")], prompts[1].relations_in)
+
+    def test_running_last_blocked_outcome_is_needs_fix_before_canonical_finish(self):
+        prompt = next(
+            prompt
+            for prompt in read_roadmap_db(roadmap_bytes("running"))
+            if prompt.prompt_id == "123456"
+        )
+        prompt.last_outcome = "BLOCKED"
+        self.assertEqual(
+            "blocked",
+            dashboard_group(prompt, {prompt.prompt_id: prompt}, pipeline=None),
+        )
+
+    def test_latest_local_terminal_outcome_uses_newest_finished_cycle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            published = Path(tmp)
+            for cycle, status, ended in (
+                ("older", "BLOCKED", "2026-09-19T22:00:00Z"),
+                ("newer", "PASS", "2026-09-19T22:05:00Z"),
+            ):
+                path = published / f"prompts/123456/cycles/{cycle}/metrics.json"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(
+                    json.dumps(
+                        {
+                            "prompt_id": "123456",
+                            "status": status,
+                            "cycle_key": cycle,
+                            "timestamp_end_utc": ended,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            self.assertEqual(
+                "PASS",
+                load_latest_terminal_outcome("123456", published_root=published),
+            )
+
+    def test_local_blocked_result_updates_dashboard_even_when_writer_is_rate_limited(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(Path(tmp) / "cache.sqlite")
+            client = FakeClient()
+            packet = {
+                "schema": "codex-roadmap.fix-packet.v1",
+                "prompt_id": "123456",
+                "outcome": "BLOCKED",
+                "blocker": "GitHub API rate limit blocks roadmap finalization.",
+                "work_state": {},
+                "next_action": "Retry the canonical mutation after the rate limit clears.",
+                "report_ref": "codex-usage:cycle-rate-limit:hash-rate-limit",
+            }
+
+            result = sync_roadmap(
+                client,
+                db,
+                raw_roadmap_db=roadmap_bytes("running"),
+                observed_outcome_loader=lambda prompt_id: (
+                    "BLOCKED" if prompt_id == "123456" else None
+                ),
+                fix_packet_loader=lambda prompt_id, outcome: (
+                    packet
+                    if prompt_id == "123456" and outcome == "BLOCKED"
+                    else None
+                ),
+                submitter=lambda _doc, _key: (_ for _ in ()).throw(
+                    RuntimeError("github_rate_limit")
+                ),
+            )
+
+            prompt_node = next(
+                node
+                for node in client.nodes
+                if str(node["name"]).startswith("[123456]")
+            )
+            needs_fix = next(
+                node for node in client.nodes if str(node["name"]).startswith("Needs fix (")
+            )
+            group_names = {str(node["name"]) for node in client.nodes}
+            self.assertEqual(needs_fix["id"], prompt_node["parent_id"])
+            self.assertIn("Needs fix (1)", group_names)
+            self.assertIn("Running (0)", group_names)
+            self.assertIn("Stato canonico: running", prompt_node["note"])
+            self.assertIn("Esito operativo Codex: BLOCKED", prompt_node["note"])
+            self.assertIn("GitHub API rate limit", prompt_node["note"])
+            self.assertEqual(1, result["warnings"])
+            db.close()
 
     def test_command_is_strict_and_ambiguous_fails_closed(self):
         aliases = {

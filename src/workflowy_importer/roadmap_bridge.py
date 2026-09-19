@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 from .api import WorkflowyAPIError, WorkflowyClient
-from .fix_packets import load_fix_packet, packet_mutation
+from .fix_packets import load_fix_packet, load_latest_terminal_outcome, packet_mutation
 from .links import workflowy_url
 
 ROADMAP_NAMESPACE = "codex-roadmap"
@@ -299,6 +299,9 @@ def dashboard_group(
         ]
         return "waiting" if unresolved else "ready"
     if prompt.status == "running":
+        outcome = str(prompt.last_outcome or "").upper()
+        if outcome in {"BLOCKED", "FAIL"}:
+            return "blocked"
         pipeline_state = str((pipeline or {}).get("pipeline_state") or "")
         if pipeline_state == "needs-fix":
             return "blocked"
@@ -369,7 +372,10 @@ def _talking_lines(
     lines: list[str] = []
     problem = (
         prompt.status in {"blocked", "failed"}
-        or outcome in {"BLOCKED", "FAIL", "CANCELLED", "UNKNOWN"}
+        or (
+            prompt.status == "running"
+            and outcome in {"BLOCKED", "FAIL", "CANCELLED", "UNKNOWN"}
+        )
         or pipeline_state == "needs-fix"
     )
 
@@ -478,6 +484,11 @@ def prompt_note(
             f"Stato canonico: {prompt.status}",
         ]
     )
+    outcome = str(prompt.last_outcome or "").upper()
+    if prompt.status == "running" and outcome in {"BLOCKED", "FAIL"}:
+        lines.append(
+            f"Esito operativo Codex: {outcome} · finalizzazione canonica in attesa"
+        )
     if prompt.project_name:
         lines.append(f"Progetto: {prompt.project_name}")
     if prompt.model or prompt.reasoning:
@@ -791,6 +802,7 @@ def sync_roadmap(
     raw_roadmap_db: bytes | None = None,
     submitter: Callable[[dict, str], dict] | None = None,
     fix_packet_loader: Callable[[str, str], dict | None] | None = None,
+    observed_outcome_loader: Callable[[str], str | None] | None = None,
     pipeline_status: dict[str, dict] | None = None,
     ccs_bindings: dict[str, dict] | None = None,
 ) -> dict[str, int]:
@@ -800,6 +812,14 @@ def sync_roadmap(
         else fetch_remote_roadmap_db(repository, branch)
     )
     prompt_by_id = {p.prompt_id: p for p in prompts}
+    outcome_loader = observed_outcome_loader or load_latest_terminal_outcome
+    for prompt in prompts:
+        if prompt.status != "running":
+            continue
+        observed_outcome = str(outcome_loader(prompt.prompt_id) or "").upper()
+        if observed_outcome in {"PASS", "BLOCKED", "FAIL", "CANCELLED", "UNKNOWN"}:
+            prompt.last_outcome = observed_outcome
+
     pipeline_status = pipeline_status if pipeline_status is not None else read_pipeline_status()
     ccs_bindings = ccs_bindings if ccs_bindings is not None else read_ccs_bindings()
 
@@ -951,14 +971,18 @@ def sync_roadmap(
         ).fetchone()
         if already_sent:
             continue
-        submit(
-            {
-                "schema": "codex-roadmap.mutation.v1",
-                "actor": "workflowy-fix-packet",
-                "operations": [operation],
-            },
-            request_key,
-        )
+        try:
+            submit(
+                {
+                    "schema": "codex-roadmap.mutation.v1",
+                    "actor": "workflowy-fix-packet",
+                    "operations": [operation],
+                },
+                request_key,
+            )
+        except RuntimeError:
+            warnings += 1
+            continue
         db.execute(
             "INSERT INTO events(source,external_key,payload_json) VALUES(?,?,?)",
             ("roadmap_fix_packet", request_key, json.dumps(packet, sort_keys=True)),
