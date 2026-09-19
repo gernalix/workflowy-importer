@@ -297,18 +297,15 @@ def mutation_for_command(
                 "note": "workflowy:implicit-running-before-terminal",
             }
         )
-    op = {
-        "op": "human_execution",
-        "prompt_id": prompt.prompt_id,
-        "outcome": outcome,
-        "actor": "workflowy",
-        "source": "workflowy-human",
-    }
-    if ended_at:
-        op["ended_at"] = ended_at
-    if cycle_key:
-        op["cycle_key"] = cycle_key
-    operations.append(op)
+    operations.append(
+        {
+            "op": "terminal_request",
+            "prompt_id": prompt.prompt_id,
+            "status": target,
+            "actor": "workflowy",
+            "note": f"workflowy:explicit-{command.lower()}",
+        }
+    )
     return operations
 
 
