@@ -828,20 +828,18 @@ def sync_roadmap(
     )
     current_root = by_id.get(root_id)
     if current_root:
-        if str(current_root.get("name") or "") != "Codex":
-            client.update_node(
-                root_id,
-                "Codex",
-                note="Dashboard operativa della roadmap Codex. roadmap.sqlite resta la fonte canonica.",
-                layout_mode="h1",
-            )
-        elif str(current_root.get("note") or "") != (
-            "Dashboard operativa della roadmap Codex. roadmap.sqlite resta la fonte canonica."
+        root_note = "Dashboard operativa della roadmap Codex. roadmap.sqlite resta la fonte canonica."
+        root_data = current_root.get("data") if isinstance(current_root.get("data"), dict) else {}
+        root_layout = str(root_data.get("layoutMode") or "bullets")
+        if (
+            str(current_root.get("name") or "") != "Codex"
+            or str(current_root.get("note") or "") != root_note
+            or root_layout != "h1"
         ):
             client.update_node(
                 root_id,
                 "Codex",
-                note="Dashboard operativa della roadmap Codex. roadmap.sqlite resta la fonte canonica.",
+                note=root_note,
                 layout_mode="h1",
             )
 
@@ -871,7 +869,12 @@ def sync_roadmap(
         group_ids[key] = group_id
         current_group = by_id.get(group_id)
         if current_group:
-            if str(current_group.get("name") or "") != desired_name:
+            group_data = current_group.get("data") if isinstance(current_group.get("data"), dict) else {}
+            group_layout = str(group_data.get("layoutMode") or "bullets")
+            if (
+                str(current_group.get("name") or "") != desired_name
+                or group_layout != "h2"
+            ):
                 client.update_node(group_id, desired_name, layout_mode="h2")
             if str(current_group.get("parent_id") or "") != root_id:
                 client.move_node(group_id, root_id, position="bottom")
