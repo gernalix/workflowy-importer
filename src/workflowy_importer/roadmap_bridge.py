@@ -69,8 +69,8 @@ class RoadmapPrompt:
     dependents: list[str]
     relations_out: list[tuple[str, str]]
     relations_in: list[tuple[str, str]]
-    last_outcome: str | None
-    fix_packet: dict | None
+    last_outcome: str | None = None
+    fix_packet: dict | None = None
 
 
 def _gh_json(*args: str) -> dict:
