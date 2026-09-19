@@ -255,9 +255,6 @@ def command_from_children(children: list[dict]) -> tuple[str, dict] | None:
 def mutation_for_command(
     prompt: RoadmapPrompt,
     command: str,
-    *,
-    ended_at: str | None = None,
-    cycle_key: str | None = None,
 ) -> list[dict]:
     status = prompt.status
     if command == "running":
@@ -366,21 +363,6 @@ def _ensure_mapped_node(
     _mapping_set(db, key, node_id, {})
     existing_ids.add(node_id)
     return node_id, {}
-
-
-def _modified_iso(node: dict) -> str:
-    raw = node.get("modifiedAt")
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
-            "+00:00", "Z"
-        )
-    if value > 10_000_000_000:
-        value /= 1000.0
-    return datetime.fromtimestamp(value, tz=timezone.utc).replace(
-        microsecond=0
-    ).isoformat().replace("+00:00", "Z")
 
 
 def _submit_with_local_writer(
@@ -528,16 +510,7 @@ def sync_roadmap(
             continue
         command, command_node = found
         try:
-            operations = mutation_for_command(
-                prompt,
-                command,
-                ended_at=_modified_iso(command_node),
-                cycle_key=(
-                    f"workflowy:{prompt_id}:"
-                    f"{command_node.get('id')}:{command.lower()}"
-                ),
-            )
-        except ValueError:
+            operations = mutation_for_command(prompt, command)\n        except ValueError:
             warnings += 1
             continue
         if operations:
