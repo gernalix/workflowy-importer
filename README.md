@@ -216,30 +216,30 @@ Use `--create-column` only when you intentionally want the program to add that c
 
 ## Codex roadmap ↔ Workflowy
 
-`wf roadmap-sync` importa automaticamente l'intero `roadmap.sqlite` canonico in Workflowy e usa la stessa vista come pannello di stato umano.
+`wf roadmap-sync` usa Workflowy come dashboard operativa della roadmap canonica.
 
-Al primo avvio crea `Codex roadmap #roadmap` sotto Inbox, quindi un gruppo per stato e un nodo canonico per ogni `PROMPT_ID`. Ogni nodo contiene tag ricercabili come `#status_pending` e `#project_personalhub`, più link Workflowy reciproci per dipendenze e relazioni tra prompt.
+La vista è volutamente corta:
 
-```bash
-wf roadmap-sync
-```
+- `Queue`: prompt ancora da eseguire;
+- `Running`: prompt avviati;
+- `Needs fix`: BLOCKED e FAIL;
+- `Done`: PASS;
+- `Archive`: stati non operativi/storici.
 
-Sotto il nodo del prompt che stai eseguendo aggiungi **un solo figlio esatto**:
+Il titolo di ogni prompt resta leggibile (`[PROMPT_ID] titolo`); stato, progetto, modello, spiegazione, dipendenze e link restano nella nota.
+
+Sotto un prompt usa **un solo nodo figlio di stato**:
 
 ```text
-running
+R
+P
+B
+F
 ```
 
-Quando termina, rinomina quel figlio in `PASS` oppure `FAIL`.
+`R = running`, `P = PASS`, `B = BLOCKED`, `F = FAIL`. Le forme lunghe restano accettate per compatibilità. `P/B/F` passano sempre dal single writer della roadmap; `B/F` aggiungono anche un piccolo marker `#needs_fix` sotto il prompt. Se sono presenti due comandi di stato contemporaneamente, il bridge non sceglie e non scrive nulla.
 
-- `running` invia al single writer la normale transizione a `running`, rendendo il prompt protetto.
-- `PASS` registra un esito umano confermato; il writer sposta il prompt in `completed/` e la normale logica delle dipendenze rende eseguibili i figli soltanto quando tutti i prerequisiti sono completati.
-- `FAIL` registra il fallimento e aggiunge sotto il prompt un testo pronto da copiare in ChatGPT: `il prompt XXXXXX è FAIL: applica il fix nel codice e nella roadmap, usando il writer unico; lascia nella roadmap solo l'eventuale lavoro Codex-only`.
-- Due comandi di stato contemporanei sono considerati ambigui e vengono ignorati: il bridge non indovina.
-
-Il bridge legge il DB SQLite remoto canonico, non i Markdown generati. Workflowy è quindi una proiezione interattiva completa della roadmap, non una seconda source of truth.
-
-Il timer opzionale `deploy/systemd/workflowy-roadmap-sync.timer` esegue il sync ogni 75 secondi, abbastanza rapidamente per l'uso manuale e sopra il limite di una full-export Workflowy al minuto.
+Il timer opzionale `deploy/systemd/workflowy-roadmap-sync.timer` mantiene la dashboard sincronizzata con `roadmap.sqlite`, che resta l'unica source of truth.
 
 ## External systems
 
