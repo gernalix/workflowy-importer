@@ -160,9 +160,20 @@ class RoadmapBridgeTests(unittest.TestCase):
         self.assertEqual([("followup", "123456")], prompts[1].relations_in)
 
     def test_command_is_strict_and_ambiguous_fails_closed(self):
-        found = command_from_children([{"name": "PASS", "id": "x"}])
-        self.assertEqual("PASS", found[0])
-        self.assertIsNone(command_from_children([{"name": " PASS ", "id": "x"}]))
+        aliases = {
+            "R": "running",
+            "P": "PASS",
+            "B": "BLOCKED",
+            "F": "FAIL",
+            "running": "running",
+            "PASS": "PASS",
+            "BLOCKED": "BLOCKED",
+            "FAIL": "FAIL",
+        }
+        for name, expected in aliases.items():
+            found = command_from_children([{"name": name, "id": "x"}])
+            self.assertEqual(expected, found[0])
+        self.assertIsNone(command_from_children([{"name": " P ", "id": "x"}]))
         self.assertIsNone(command_from_children([{"name": "pass", "id": "x"}]))
         with self.assertRaises(ValueError):
             command_from_children(
@@ -189,13 +200,17 @@ class RoadmapBridgeTests(unittest.TestCase):
             relations_out=[],
             relations_in=[],
         )
-        self.assertIn("#project_unknown", prompt_name(prompt))
+        self.assertEqual("[123456] No project", prompt_name(prompt))
 
     def test_terminal_command_can_follow_pending_atomically(self):
         prompt = read_roadmap_db(roadmap_bytes())[0]
         ops = mutation_for_command(prompt, "PASS")
         self.assertEqual(["status", "terminal_request"], [op["op"] for op in ops])
         self.assertEqual("completed", ops[-1]["status"])
+        blocked = mutation_for_command(prompt, "BLOCKED")
+        self.assertEqual("blocked", blocked[-1]["status"])
+        failed = mutation_for_command(prompt, "FAIL")
+        self.assertEqual("failed", failed[-1]["status"])
 
     def test_sync_creates_whole_projection_and_submits_running(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -214,11 +229,18 @@ class RoadmapBridgeTests(unittest.TestCase):
                 node for node in client.nodes
                 if str(node["name"]).startswith("[123456]")
             )
-            self.assertIn("#status_pending", prompt_node["name"])
+            self.assertEqual("[123456] Parent", prompt_node["name"])
+            self.assertIn("#status_pending", prompt_node["note"])
             self.assertIn("Sblocca:", prompt_node["note"])
             self.assertIn("Relazioni →:", prompt_node["note"])
+            group_names = {str(node["name"]) for node in client.nodes}
+            self.assertIn("Queue (2)", group_names)
+            self.assertIn("Running (0)", group_names)
+            self.assertIn("Needs fix (0)", group_names)
+            self.assertIn("Done (0)", group_names)
+            self.assertIn("Archive (0)", group_names)
 
-            client.create_node(prompt_node["id"], "running")
+            client.create_node(prompt_node["id"], "R")
             second = sync_roadmap(
                 client,
                 db,
@@ -228,6 +250,40 @@ class RoadmapBridgeTests(unittest.TestCase):
             self.assertEqual(1, second["mutations_submitted"])
             self.assertEqual("status", submitted[-1][0]["operations"][0]["op"])
             self.assertEqual("running", submitted[-1][0]["operations"][0]["status"])
+            db.close()
+
+
+    def test_short_blocked_creates_fix_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(Path(tmp) / "cache.sqlite")
+            client = FakeClient()
+            submitted: list[tuple[dict, str]] = []
+            sync_roadmap(
+                client,
+                db,
+                raw_roadmap_db=roadmap_bytes(),
+                submitter=lambda doc, key: submitted.append((doc, key)) or {"status": "ok"},
+            )
+            prompt_node = next(
+                node for node in client.nodes
+                if str(node["name"]).startswith("[123456]")
+            )
+            client.create_node(prompt_node["id"], "B")
+            result = sync_roadmap(
+                client,
+                db,
+                raw_roadmap_db=roadmap_bytes(),
+                submitter=lambda doc, key: submitted.append((doc, key)) or {"status": "ok"},
+            )
+            self.assertEqual(1, result["mutations_submitted"])
+            self.assertEqual("blocked", submitted[-1][0]["operations"][-1]["status"])
+            self.assertTrue(
+                any(
+                    node["parent_id"] == prompt_node["id"]
+                    and node["name"] == "FIX B · 123456 #needs_fix"
+                    for node in client.nodes
+                )
+            )
             db.close()
 
 
