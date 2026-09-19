@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from workflowy_importer import bridge_cli
+from workflowy_importer.bridge import _roadmap_prompt_text
 from workflowy_importer.cache import connect
 from workflowy_importer.roadmap_bridge import (
     RoadmapPrompt,
@@ -36,6 +37,13 @@ def roadmap_bytes(status: str = "pending") -> bytes:
               queue_position INTEGER,
               created_at TEXT NOT NULL
             );
+            CREATE TABLE prompt_materializations(
+              prompt_id TEXT PRIMARY KEY,
+              body TEXT NOT NULL,
+              sha256 TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              actor TEXT NOT NULL
+            );
             CREATE TABLE dependencies(
               prompt_id TEXT NOT NULL,
               depends_on_prompt_id TEXT NOT NULL
@@ -59,6 +67,14 @@ def roadmap_bytes(status: str = "pending") -> bytes:
                '654321','Child','pending','Example','gernalix/example',
                'prompts/child.md','Do child','GPT-5.6 Terra','medium',2,'2026-09-19T00:01:00Z'
             )"""
+        )
+        conn.execute(
+            "INSERT INTO prompt_materializations VALUES(?,?,?,?,?)",
+            ("123456", "PROMPT_ID=123456\nDo parent\n", "sha-parent", "2026-09-19T00:00:00Z", "test"),
+        )
+        conn.execute(
+            "INSERT INTO prompt_materializations VALUES(?,?,?,?,?)",
+            ("654321", "PROMPT_ID=654321\nDo child\n", "sha-child", "2026-09-19T00:01:00Z", "test"),
         )
         conn.execute("INSERT INTO dependencies VALUES('654321','123456')")
         conn.execute(
@@ -132,6 +148,15 @@ class FakeClient:
 
 
 class RoadmapBridgeTests(unittest.TestCase):
+    def test_local_bridge_reads_canonical_prompt_body_from_sqlite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "roadmap.sqlite").write_bytes(roadmap_bytes())
+            found = _roadmap_prompt_text(root, "123456")
+            self.assertIsNotNone(found)
+            self.assertEqual("PROMPT_ID=123456\nDo parent\n", found[0])
+            self.assertEqual("roadmap.sqlite", found[1])
+
     def test_cli_dispatches_roadmap_sync(self):
         args = bridge_cli.build_parser().parse_args(["roadmap-sync"])
         db = MagicMock()
@@ -204,7 +229,7 @@ class RoadmapBridgeTests(unittest.TestCase):
 
     def test_terminal_command_can_follow_pending_atomically(self):
         prompt = read_roadmap_db(roadmap_bytes())[0]
-        ops = mutation_for_command(prompt, "PASS")
+        ops = mutation_for_command(prompt, "PASS", pipeline_state="done")
         self.assertEqual(["status", "terminal_request"], [op["op"] for op in ops])
         self.assertEqual("completed", ops[-1]["status"])
         blocked = mutation_for_command(prompt, "BLOCKED")
@@ -234,8 +259,10 @@ class RoadmapBridgeTests(unittest.TestCase):
             self.assertIn("Sblocca:", prompt_node["note"])
             self.assertIn("Relazioni →:", prompt_node["note"])
             group_names = {str(node["name"]) for node in client.nodes}
-            self.assertIn("Queue (2)", group_names)
+            self.assertIn("Ready (1)", group_names)
+            self.assertIn("Waiting (1)", group_names)
             self.assertIn("Running (0)", group_names)
+            self.assertIn("Integration (0)", group_names)
             self.assertIn("Needs fix (0)", group_names)
             self.assertIn("Done (0)", group_names)
             self.assertIn("Archive (0)", group_names)
@@ -252,6 +279,54 @@ class RoadmapBridgeTests(unittest.TestCase):
             self.assertEqual("running", submitted[-1][0]["operations"][0]["status"])
             db.close()
 
+
+    def test_running_repo_task_moves_to_integration_group(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(Path(tmp) / "cache.sqlite")
+            client = FakeClient()
+            sync_roadmap(
+                client,
+                db,
+                raw_roadmap_db=roadmap_bytes("running"),
+                submitter=lambda doc, key: {"status": "ok"},
+                pipeline_status={
+                    "123456": {
+                        "pipeline_state": "integration",
+                        "integration_state": "checks-pending",
+                        "pr_number": 27,
+                        "pr_url": "https://github.com/gernalix/example/pull/27",
+                        "queue_position": 1,
+                        "queue_size": 2,
+                    }
+                },
+                ccs_bindings={
+                    "123456": {
+                        "context_id": "ctx-1",
+                        "codex_deep_link": "codex://threads/thread-1",
+                    }
+                },
+            )
+            prompt_node = next(
+                node for node in client.nodes
+                if str(node["name"]).startswith("[123456]")
+            )
+            integration = next(
+                node for node in client.nodes
+                if str(node["name"]).startswith("Integration (")
+            )
+            self.assertEqual(integration["id"], prompt_node["parent_id"])
+            self.assertIn("📋 Copia:", prompt_node["note"])
+            self.assertIn("🌐 ChatGPT:", prompt_node["note"])
+            self.assertIn("codex://threads/thread-1", prompt_node["note"])
+            self.assertIn("Coda integrazione: 1/2", prompt_node["note"])
+            db.close()
+
+    def test_repo_pass_override_requires_integrated_pipeline(self):
+        prompt = read_roadmap_db(roadmap_bytes("running"))[0]
+        with self.assertRaises(ValueError):
+            mutation_for_command(prompt, "PASS", pipeline_state="integration")
+        ops = mutation_for_command(prompt, "PASS", pipeline_state="done")
+        self.assertEqual("completed", ops[-1]["status"])
 
     def test_short_blocked_creates_fix_marker(self):
         with tempfile.TemporaryDirectory() as tmp:

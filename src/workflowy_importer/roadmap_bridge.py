@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from urllib.request import urlopen
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,15 +30,15 @@ COMMANDS = {
     "FAIL": "FAIL",
 }
 DASHBOARD_GROUPS = (
-    ("pending", "Queue"),
+    ("ready", "Ready"),
+    ("waiting", "Waiting"),
     ("running", "Running"),
+    ("integration", "Integration"),
     ("blocked", "Needs fix"),
     ("completed", "Done"),
     ("unknown", "Archive"),
 )
 STATUS_GROUP_KEY = {
-    "pending": "pending",
-    "running": "running",
     "blocked": "blocked",
     "failed": "blocked",
     "completed": "completed",
@@ -45,6 +46,8 @@ STATUS_GROUP_KEY = {
     "superseded": "unknown",
     "unknown": "unknown",
 }
+DEFAULT_REPO_TASK = Path.home() / "projects" / "github-autosync" / "repo_single_writer.py"
+DEFAULT_CCS_URL = "http://127.0.0.1:43817"
 LEGACY_GROUP_KEYS = ("failed", "cancelled", "superseded")
 
 
@@ -176,6 +179,92 @@ def read_roadmap_db(raw: bytes) -> list[RoadmapPrompt]:
     ]
 
 
+
+def read_pipeline_status(repo_task: Path = DEFAULT_REPO_TASK) -> dict[str, dict]:
+    if not repo_task.expanduser().is_file():
+        return {}
+    proc = subprocess.run(
+        [sys.executable, str(repo_task.expanduser()), "status-all", "--roadmap-only"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        timeout=10,
+    )
+    if proc.returncode:
+        return {}
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return {}
+    rows = payload.get("tasks") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return {}
+    return {
+        str(row.get("task_id")): row
+        for row in rows
+        if isinstance(row, dict) and row.get("task_id")
+    }
+
+
+def read_ccs_bindings(base_url: str = DEFAULT_CCS_URL) -> dict[str, dict]:
+    try:
+        with urlopen(base_url.rstrip("/") + "/api/prompts", timeout=1.5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return {}
+    rows = payload.get("bindings") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return {}
+    return {
+        str(row.get("prompt_id")): row
+        for row in rows
+        if isinstance(row, dict) and row.get("prompt_id")
+    }
+
+
+def _external_repo_task(prompt: RoadmapPrompt) -> bool:
+    repo = str(prompt.repo or "").strip().lower().removesuffix(".git").rstrip("/")
+    if not repo:
+        return False
+    repo = repo.removeprefix("https://github.com/")
+    return repo != "gernalix/codex-roadmap"
+
+
+def dashboard_group(
+    prompt: RoadmapPrompt,
+    prompt_by_id: dict[str, RoadmapPrompt],
+    pipeline: dict | None,
+) -> str:
+    if prompt.status in {"blocked", "failed"}:
+        return "blocked"
+    if prompt.status == "completed":
+        pipeline_state = str((pipeline or {}).get("pipeline_state") or "")
+        if _external_repo_task(prompt) and pipeline_state not in {"", "done"}:
+            return "blocked"
+        return "completed"
+    if prompt.status in {"cancelled", "superseded", "unknown"}:
+        return "unknown"
+    if prompt.status == "pending":
+        unresolved = [
+            dep for dep in prompt.dependencies
+            if dep in prompt_by_id and prompt_by_id[dep].status != "completed"
+        ]
+        return "waiting" if unresolved else "ready"
+    if prompt.status == "running":
+        pipeline_state = str((pipeline or {}).get("pipeline_state") or "")
+        if pipeline_state == "needs-fix":
+            return "blocked"
+        if pipeline_state in {"integration", "done"}:
+            return "integration"
+        return "running"
+    return "unknown"
+
+
+def _action_url(prompt_id: str, action: str) -> str:
+    return f"http://127.0.0.1:43817/ui/prompt/{prompt_id}/{action}"
+
+
 def _tag(value: str, prefix: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", value.strip()).strip("_").lower()
     return f"#{prefix}_{cleaned}" if cleaned else ""
@@ -198,6 +287,8 @@ def prompt_note(
     *,
     repository: str,
     branch: str,
+    pipeline: dict | None = None,
+    binding: dict | None = None,
 ) -> str:
     lines = [
         f"PROMPT_ID: {prompt.prompt_id}",
@@ -212,10 +303,33 @@ def prompt_note(
         )
     if prompt.explanation:
         lines.append(f"Spiegazione: {prompt.explanation}")
+    lines.append(f"🚀 Apri: {_action_url(prompt.prompt_id, 'launch')}")
+    lines.append(f"📋 Copia: {_action_url(prompt.prompt_id, 'copy')}")
+    if binding and binding.get("context_id"):
+        lines.append(f"🌐 ChatGPT: {_action_url(prompt.prompt_id, 'chrome')}")
+    if binding and binding.get("codex_deep_link"):
+        lines.append(f"🧠 Codex: {binding['codex_deep_link']}")
     if prompt.current_path:
         lines.append(
-            f"Prompt: https://github.com/{repository}/blob/{branch}/{prompt.current_path}"
+            f"Sorgente audit: https://github.com/{repository}/blob/{branch}/{prompt.current_path}"
         )
+    if pipeline:
+        state = pipeline.get("integration_state") or pipeline.get("pipeline_state")
+        if state:
+            lines.append(f"Pipeline: {state}")
+        if pipeline.get("pr_url"):
+            lines.append(f"PR: {pipeline['pr_url']}")
+        if pipeline.get("queue_position") and pipeline.get("queue_size"):
+            lines.append(
+                f"Coda integrazione: {pipeline['queue_position']}/{pipeline['queue_size']}"
+            )
+        pipeline_state = str(pipeline.get("pipeline_state") or "")
+        if prompt.status == "completed" and pipeline_state not in {"", "done"}:
+            lines.append(
+                f"⚠ State mismatch: roadmap=completed · pipeline={pipeline_state}"
+            )
+        elif prompt.status == "running" and pipeline_state == "done":
+            lines.append("Finalizzazione roadmap PASS in coda")
     if prompt.dependencies:
         lines.append(
             "Dipende da: "
@@ -243,7 +357,7 @@ def prompt_note(
             )
         )
     lines.append(
-        "Stato manuale: R=running · P=PASS · B=BLOCKED · F=FAIL."
+        "Override manuale d'emergenza: R=running · P=PASS · B=BLOCKED · F=FAIL."
     )
     tags = " ".join(
         tag
@@ -276,6 +390,8 @@ def command_from_children(children: list[dict]) -> tuple[str, dict] | None:
 def mutation_for_command(
     prompt: RoadmapPrompt,
     command: str,
+    *,
+    pipeline_state: str | None = None,
 ) -> list[dict]:
     status = prompt.status
     if command == "running":
@@ -294,6 +410,9 @@ def mutation_for_command(
                 "note": "workflowy:explicit-running",
             }
         ]
+
+    if command == "PASS" and _external_repo_task(prompt) and pipeline_state != "done":
+        raise ValueError(f"pass_requires_integrated_repo:{prompt.prompt_id}")
 
     targets = {
         "PASS": "completed",
@@ -454,6 +573,8 @@ def sync_roadmap(
     roadmap_dir: Path = Path("~/projects/codex-roadmap"),
     raw_roadmap_db: bytes | None = None,
     submitter: Callable[[dict, str], dict] | None = None,
+    pipeline_status: dict[str, dict] | None = None,
+    ccs_bindings: dict[str, dict] | None = None,
 ) -> dict[str, int]:
     prompts = read_roadmap_db(
         raw_roadmap_db
@@ -461,6 +582,8 @@ def sync_roadmap(
         else fetch_remote_roadmap_db(repository, branch)
     )
     prompt_by_id = {p.prompt_id: p for p in prompts}
+    pipeline_status = pipeline_status if pipeline_status is not None else read_pipeline_status()
+    ccs_bindings = ccs_bindings if ccs_bindings is not None else read_ccs_bindings()
 
     exported = client.export_nodes()
     by_id = {
@@ -502,8 +625,15 @@ def sync_roadmap(
             )
 
     group_counts = {key: 0 for key, _ in DASHBOARD_GROUPS}
+    prompt_groups: dict[str, str] = {}
     for prompt in prompts:
-        group_counts[STATUS_GROUP_KEY.get(prompt.status, "unknown")] += 1
+        group = dashboard_group(
+            prompt,
+            prompt_by_id,
+            pipeline_status.get(prompt.prompt_id),
+        )
+        prompt_groups[prompt.prompt_id] = group
+        group_counts[group] += 1
 
     group_ids: dict[str, str] = {}
     for key, label in DASHBOARD_GROUPS:
@@ -548,7 +678,7 @@ def sync_roadmap(
             node_ids[prompt.prompt_id] = mapped[0]
             continue
         node_id = client.create_node(
-            group_ids[STATUS_GROUP_KEY.get(prompt.status, "unknown")],
+            group_ids[prompt_groups[prompt.prompt_id]],
             prompt_name(prompt),
             position="bottom",
         )
@@ -578,7 +708,13 @@ def sync_roadmap(
             continue
         command, command_node = found
         try:
-            operations = mutation_for_command(prompt, command)
+            operations = mutation_for_command(
+                prompt,
+                command,
+                pipeline_state=str(
+                    (pipeline_status.get(prompt_id) or {}).get("pipeline_state") or ""
+                ) or None,
+            )
         except ValueError:
             warnings += 1
             continue
@@ -609,13 +745,15 @@ def sync_roadmap(
     moved = 0
     for prompt in prompts:
         node_id = node_ids[prompt.prompt_id]
-        desired_parent = group_ids[STATUS_GROUP_KEY.get(prompt.status, "unknown")]
+        desired_parent = group_ids[prompt_groups[prompt.prompt_id]]
         desired_name = prompt_name(prompt)
         desired_note = prompt_note(
             prompt,
             node_ids,
             repository=repository,
             branch=branch,
+            pipeline=pipeline_status.get(prompt.prompt_id),
+            binding=ccs_bindings.get(prompt.prompt_id),
         )
         current = by_id.get(node_id)
         if current:
