@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import html
 import json
 import re
 import sqlite3
@@ -68,6 +69,8 @@ class RoadmapPrompt:
     dependents: list[str]
     relations_out: list[tuple[str, str]]
     relations_in: list[tuple[str, str]]
+    last_outcome: str | None = None
+    fix_packet: dict | None = None
 
 
 def _gh_json(*args: str) -> dict:
@@ -160,6 +163,43 @@ def read_roadmap_db(raw: bytes) -> list[RoadmapPrompt]:
                 rel_in.setdefault(row["to_prompt_id"], []).append(
                     (row["relation_type"], row["from_prompt_id"])
                 )
+
+            last_outcomes: dict[str, str] = {}
+            try:
+                for row in conn.execute(
+                    """SELECT prompt_id,outcome
+                       FROM executions
+                       WHERE outcome IS NOT NULL
+                       ORDER BY COALESCE(ended_at,started_at,recorded_at) DESC,
+                                execution_id DESC"""
+                ):
+                    prompt_id = str(row["prompt_id"])
+                    last_outcomes.setdefault(prompt_id, str(row["outcome"]))
+            except sqlite3.OperationalError:
+                pass
+
+            fix_packets: dict[str, dict] = {}
+            try:
+                for row in conn.execute(
+                    """SELECT prompt_id,summary
+                       FROM analyses
+                       WHERE source_ref LIKE 'codex-usage:%'
+                       ORDER BY analyzed_at DESC,analysis_id DESC"""
+                ):
+                    prompt_id = str(row["prompt_id"])
+                    if prompt_id in fix_packets:
+                        continue
+                    try:
+                        packet = json.loads(str(row["summary"] or ""))
+                    except json.JSONDecodeError:
+                        continue
+                    if (
+                        isinstance(packet, dict)
+                        and str(packet.get("prompt_id") or "") == prompt_id
+                    ):
+                        fix_packets[prompt_id] = packet
+            except sqlite3.OperationalError:
+                pass
         finally:
             conn.close()
 
@@ -179,6 +219,8 @@ def read_roadmap_db(raw: bytes) -> list[RoadmapPrompt]:
             dependents=sorted(dependents.get(row["prompt_id"], [])),
             relations_out=sorted(rel_out.get(row["prompt_id"], [])),
             relations_in=sorted(rel_in.get(row["prompt_id"], [])),
+            last_outcome=last_outcomes.get(str(row["prompt_id"])),
+            fix_packet=fix_packets.get(str(row["prompt_id"])),
         )
         for row in rows
     ]
@@ -275,8 +317,132 @@ def _tag(value: str, prefix: str) -> str:
     return f"#{prefix}_{cleaned}" if cleaned else ""
 
 
-def prompt_name(prompt: RoadmapPrompt) -> str:
-    return f"[{prompt.prompt_id}] {prompt.title}"
+DASHBOARD_MARKERS = {
+    "ready": "🟢",
+    "waiting": "🟡",
+    "running": "🔵",
+    "integration": "🟣",
+    "blocked": "🔴",
+    "completed": "✅",
+    "unknown": "⚪",
+}
+
+
+def prompt_name(prompt: RoadmapPrompt, group: str | None = None) -> str:
+    marker = DASHBOARD_MARKERS.get(group or "", "")
+    marker_text = f"{marker} " if marker else ""
+    return (
+        f"[{prompt.prompt_id}] {marker_text}"
+        f"<b>{html.escape(prompt.title)}</b>"
+    )
+
+
+def _human_text(value: object, *, limit: int = 280) -> str:
+    text = " ".join(str(value or "").replace("\\_", "_").split()).strip()
+    text = re.sub(
+        r"^(?:BLOCKER|ERROR|NEXT_ACTION|RESULT)\s*[:=]\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if re.fullmatch(r"[A-Za-z0-9_.:/-]+", text or ""):
+        text = text.replace("_", " ")
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + "…"
+    return text
+
+
+def _talking_lines(
+    prompt: RoadmapPrompt,
+    *,
+    group: str,
+    pipeline: dict | None,
+    binding: dict | None,
+    fix_packet: dict | None,
+) -> list[str]:
+    pipeline = pipeline or {}
+    binding = binding or {}
+    packet = fix_packet or prompt.fix_packet
+    pipeline_state = str(pipeline.get("pipeline_state") or "")
+    outcome = str(prompt.last_outcome or "").upper()
+
+    lines: list[str] = []
+    problem = (
+        prompt.status in {"blocked", "failed"}
+        or outcome in {"BLOCKED", "FAIL", "CANCELLED", "UNKNOWN"}
+        or pipeline_state == "needs-fix"
+    )
+
+    if prompt.status == "completed" and _external_repo_task(prompt) and pipeline_state not in {"", "done"}:
+        lines.append(
+            "🟠 Il prompt è PASS, ma l'integrazione del repository non è ancora chiusa."
+        )
+        lines.append(
+            "👉 Prossimo passo: lascia finire CI/merge; intervieni solo se passa a Needs fix."
+        )
+    elif problem:
+        if prompt.status == "failed" or outcome == "FAIL":
+            lines.append("🔴 Codex ha incontrato un errore e non è arrivato a PASS.")
+        elif outcome == "CANCELLED":
+            lines.append("🟠 L'ultima esecuzione Codex è stata interrotta prima del PASS.")
+        else:
+            lines.append("🔴 Codex si è fermato prima di completare il lavoro con PASS.")
+
+        if isinstance(packet, dict):
+            blocker = _human_text(packet.get("blocker"))
+            next_action = _human_text(packet.get("next_action"))
+            if blocker:
+                lines.append(f"💬 In breve: {blocker}")
+            if next_action:
+                lines.append(f"👉 Prossimo passo consigliato: {next_action}")
+        else:
+            lines.append(
+                "💬 Non ho ancora un riassunto affidabile del motivo, quindi non invento una causa."
+            )
+            lines.append(
+                "👉 Prossimo passo: apri la chat/report Codex associata e usa l'ultimo blocker concreto prima di rilanciare."
+            )
+    elif group == "integration":
+        lines.append(
+            "🟣 Codex ha finito la sua parte. Sto aspettando controlli e integrazione."
+        )
+        lines.append("👉 Per ora non devi fare nulla.")
+    elif group == "running":
+        lines.append("🔵 Codex sta lavorando su questo prompt.")
+        lines.append("👉 Per ora non devi fare nulla.")
+    elif group == "waiting":
+        unresolved = [str(dep) for dep in prompt.dependencies]
+        suffix = " · ".join(unresolved[:3])
+        if len(unresolved) > 3:
+            suffix += " · …"
+        lines.append(
+            "🟡 Questo prompt non è ancora pronto"
+            + (f": sta aspettando {suffix}." if suffix else ".")
+        )
+        lines.append("👉 Aspetta che le dipendenze passino.")
+    elif group == "ready":
+        lines.append("🟢 Questo prompt è pronto.")
+        lines.append("👉 Se vuoi avviarlo, usa 🚀 Apri.")
+    elif group == "completed":
+        lines.append("✅ PASS. Questo prompt è chiuso e non richiede altro.")
+    else:
+        lines.append("⚪ Non riesco a tradurre questo stato in un'azione sicura.")
+        lines.append("👉 Controlla lo stato canonico prima di intervenire.")
+
+    has_chrome = bool(binding.get("context_id") and binding.get("url"))
+    has_codex = bool(binding.get("codex_thread") and binding.get("codex_deep_link"))
+    if not has_chrome:
+        lines.append(
+            f"🟠 Link Chrome mancante. Vuoi aggiungerlo? → {_action_url(prompt.prompt_id, 'bind-chrome')}"
+        )
+    if not has_codex:
+        lines.append(
+            f"🟠 Link Codex mancante. Vuoi aggiungerlo? → {_action_url(prompt.prompt_id, 'bind-codex')}"
+        )
+    if has_chrome and has_codex:
+        lines.append("🔗 Chrome e Codex sono collegati.")
+
+    return lines
 
 
 def _mapped_link(prompt_id: str, node_ids: dict[str, str]) -> str:
@@ -294,11 +460,24 @@ def prompt_note(
     branch: str,
     pipeline: dict | None = None,
     binding: dict | None = None,
+    group: str | None = None,
+    fix_packet: dict | None = None,
 ) -> str:
-    lines = [
-        f"PROMPT_ID: {prompt.prompt_id}",
-        f"Stato canonico: {prompt.status}",
-    ]
+    effective_group = group or dashboard_group(prompt, {prompt.prompt_id: prompt}, pipeline)
+    lines = _talking_lines(
+        prompt,
+        group=effective_group,
+        pipeline=pipeline,
+        binding=binding,
+        fix_packet=fix_packet,
+    )
+    lines.extend(
+        [
+            "",
+            f"PROMPT_ID: {prompt.prompt_id}",
+            f"Stato canonico: {prompt.status}",
+        ]
+    )
     if prompt.project_name:
         lines.append(f"Progetto: {prompt.project_name}")
     if prompt.model or prompt.reasoning:
@@ -533,6 +712,7 @@ def _ensure_mapped_node(
     parent_id: str,
     name: str,
     note: str | None = None,
+    layout_mode: str = "bullets",
 ) -> tuple[str, dict]:
     mapped = _mapping_get(db, key)
     if mapped and mapped[0] in existing_ids:
@@ -541,6 +721,7 @@ def _ensure_mapped_node(
         parent_id,
         name,
         note=note,
+        layout_mode=layout_mode,
         position="bottom",
     )
     _mapping_set(db, key, node_id, {})
@@ -643,22 +824,23 @@ def sync_roadmap(
         parent_id=parent,
         name="Codex",
         note="Dashboard operativa della roadmap Codex. roadmap.sqlite resta la fonte canonica.",
+        layout_mode="h1",
     )
     current_root = by_id.get(root_id)
     if current_root:
-        if str(current_root.get("name") or "") != "Codex":
-            client.update_node(
-                root_id,
-                "Codex",
-                note="Dashboard operativa della roadmap Codex. roadmap.sqlite resta la fonte canonica.",
-            )
-        elif str(current_root.get("note") or "") != (
-            "Dashboard operativa della roadmap Codex. roadmap.sqlite resta la fonte canonica."
+        root_note = "Dashboard operativa della roadmap Codex. roadmap.sqlite resta la fonte canonica."
+        root_data = current_root.get("data") if isinstance(current_root.get("data"), dict) else {}
+        root_layout = str(root_data.get("layoutMode") or "bullets")
+        if (
+            str(current_root.get("name") or "") != "Codex"
+            or str(current_root.get("note") or "") != root_note
+            or root_layout != "h1"
         ):
             client.update_node(
                 root_id,
                 "Codex",
-                note="Dashboard operativa della roadmap Codex. roadmap.sqlite resta la fonte canonica.",
+                note=root_note,
+                layout_mode="h1",
             )
 
     group_counts = {key: 0 for key, _ in DASHBOARD_GROUPS}
@@ -682,12 +864,18 @@ def sync_roadmap(
             key=GROUP_PREFIX + key,
             parent_id=root_id,
             name=desired_name,
+            layout_mode="h2",
         )
         group_ids[key] = group_id
         current_group = by_id.get(group_id)
         if current_group:
-            if str(current_group.get("name") or "") != desired_name:
-                client.update_node(group_id, desired_name)
+            group_data = current_group.get("data") if isinstance(current_group.get("data"), dict) else {}
+            group_layout = str(group_data.get("layoutMode") or "bullets")
+            if (
+                str(current_group.get("name") or "") != desired_name
+                or group_layout != "h2"
+            ):
+                client.update_node(group_id, desired_name, layout_mode="h2")
             if str(current_group.get("parent_id") or "") != root_id:
                 client.move_node(group_id, root_id, position="bottom")
 
@@ -714,9 +902,11 @@ def sync_roadmap(
         if mapped and mapped[0] in existing_ids:
             node_ids[prompt.prompt_id] = mapped[0]
             continue
+        group = prompt_groups[prompt.prompt_id]
         node_id = client.create_node(
-            group_ids[prompt_groups[prompt.prompt_id]],
-            prompt_name(prompt),
+            group_ids[group],
+            prompt_name(prompt, group),
+            layout_mode="h3" if group == "blocked" else "bullets",
             position="bottom",
         )
         _mapping_set(db, prompt.prompt_id, node_id, {})
@@ -734,6 +924,46 @@ def sync_roadmap(
         )
     )
     packet_loader = fix_packet_loader or load_fix_packet
+    display_packets: dict[str, dict] = {
+        prompt.prompt_id: prompt.fix_packet
+        for prompt in prompts
+        if isinstance(prompt.fix_packet, dict)
+    }
+
+    # Publish and display terminal B/F context even when the status came from
+    # Codex directly rather than a manual Workflowy child command.
+    for prompt in prompts:
+        outcome = str(prompt.last_outcome or "").upper()
+        if prompt.status == "blocked":
+            outcome = "BLOCKED"
+        elif prompt.status == "failed":
+            outcome = "FAIL"
+        if outcome not in {"BLOCKED", "FAIL"}:
+            continue
+        packet = packet_loader(prompt.prompt_id, outcome)
+        if not packet:
+            continue
+        display_packets[prompt.prompt_id] = packet
+        operation, request_key = packet_mutation(packet)
+        already_sent = db.execute(
+            "SELECT 1 FROM events WHERE source=? AND external_key=?",
+            ("roadmap_fix_packet", request_key),
+        ).fetchone()
+        if already_sent:
+            continue
+        submit(
+            {
+                "schema": "codex-roadmap.mutation.v1",
+                "actor": "workflowy-fix-packet",
+                "operations": [operation],
+            },
+            request_key,
+        )
+        db.execute(
+            "INSERT INTO events(source,external_key,payload_json) VALUES(?,?,?)",
+            ("roadmap_fix_packet", request_key, json.dumps(packet, sort_keys=True)),
+        )
+        fix_packets_submitted += 1
 
     for prompt_id, node_id in node_ids.items():
         prompt = prompt_by_id[prompt_id]
@@ -813,8 +1043,10 @@ def sync_roadmap(
     moved = 0
     for prompt in prompts:
         node_id = node_ids[prompt.prompt_id]
-        desired_parent = group_ids[prompt_groups[prompt.prompt_id]]
-        desired_name = prompt_name(prompt)
+        group = prompt_groups[prompt.prompt_id]
+        desired_parent = group_ids[group]
+        desired_name = prompt_name(prompt, group)
+        desired_layout = "h3" if group == "blocked" else "bullets"
         desired_note = prompt_note(
             prompt,
             node_ids,
@@ -822,23 +1054,37 @@ def sync_roadmap(
             branch=branch,
             pipeline=pipeline_status.get(prompt.prompt_id),
             binding=ccs_bindings.get(prompt.prompt_id),
+            group=group,
+            fix_packet=display_packets.get(prompt.prompt_id),
         )
         current = by_id.get(node_id)
         if current:
             current_name = str(current.get("name") or "")
             current_note = str(current.get("note") or "")
-            if current_name != desired_name or current_note != desired_note:
+            current_data = current.get("data") if isinstance(current.get("data"), dict) else {}
+            current_layout = str(current_data.get("layoutMode") or "bullets")
+            if (
+                current_name != desired_name
+                or current_note != desired_note
+                or current_layout != desired_layout
+            ):
                 client.update_node(
                     node_id,
                     desired_name,
                     note=desired_note,
+                    layout_mode=desired_layout,
                 )
                 updated += 1
             if str(current.get("parent_id") or "") != desired_parent:
                 client.move_node(node_id, desired_parent, position="bottom")
                 moved += 1
         else:
-            client.update_node(node_id, desired_name, note=desired_note)
+            client.update_node(
+                node_id,
+                desired_name,
+                note=desired_note,
+                layout_mode=desired_layout,
+            )
             updated += 1
 
     db.commit()
