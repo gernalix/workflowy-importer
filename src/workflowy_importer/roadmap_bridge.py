@@ -315,6 +315,13 @@ def _action_url(prompt_id: str, action: str) -> str:
     return f"http://127.0.0.1:43817/ui/prompt/{prompt_id}/{action}"
 
 
+def _link(label: str, url: str) -> str:
+    return (
+        f'<a href="{html.escape(str(url), quote=True)}">'
+        f"{html.escape(label)}</a>"
+    )
+
+
 def _tag(value: str, prefix: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", value.strip()).strip("_").lower()
     return f"#{prefix}_{cleaned}" if cleaned else ""
@@ -364,7 +371,6 @@ def _talking_lines(
     fix_packet: dict | None,
 ) -> list[str]:
     pipeline = pipeline or {}
-    binding = binding or {}
     packet = fix_packet or prompt.fix_packet
     pipeline_state = str(pipeline.get("pipeline_state") or "")
     outcome = str(prompt.last_outcome or "").upper()
@@ -379,74 +385,48 @@ def _talking_lines(
         or pipeline_state == "needs-fix"
     )
 
-    if prompt.status == "completed" and _external_repo_task(prompt) and pipeline_state not in {"", "done"}:
-        lines.append(
-            "🟠 Il prompt è PASS, ma l'integrazione del repository non è ancora chiusa."
-        )
-        lines.append(
-            "👉 Prossimo passo: lascia finire CI/merge; intervieni solo se passa a Needs fix."
-        )
+    if (
+        prompt.status == "completed"
+        and _external_repo_task(prompt)
+        and pipeline_state not in {"", "done"}
+    ):
+        lines.append("🟠 PASS Codex, integrazione repository ancora aperta.")
     elif problem:
         if prompt.status == "failed" or outcome == "FAIL":
-            lines.append("🔴 Codex ha incontrato un errore e non è arrivato a PASS.")
+            lines.append("🔴 FAIL · Codex non ha completato il lavoro.")
         elif outcome == "CANCELLED":
-            lines.append("🟠 L'ultima esecuzione Codex è stata interrotta prima del PASS.")
+            lines.append("🟠 Interrotto prima del PASS.")
         else:
-            lines.append("🔴 Codex si è fermato prima di completare il lavoro con PASS.")
+            lines.append("🔴 BLOCKED · Codex si è fermato prima del PASS.")
 
         if isinstance(packet, dict):
             blocker = _human_text(packet.get("blocker"))
             next_action = _human_text(packet.get("next_action"))
             if blocker:
-                lines.append(f"💬 In breve: {blocker}")
+                lines.append(f"<b>Blocco</b>: {html.escape(blocker)}")
             if next_action:
-                lines.append(f"👉 Prossimo passo consigliato: {next_action}")
+                lines.append(f"<b>Prossimo passo</b>: {html.escape(next_action)}")
         else:
-            lines.append(
-                "💬 Non ho ancora un riassunto affidabile del motivo, quindi non invento una causa."
-            )
-            lines.append(
-                "👉 Prossimo passo: apri la chat/report Codex associata e usa l'ultimo blocker concreto prima di rilanciare."
-            )
+            lines.append("<b>Blocco</b>: causa non ancora disponibile.")
     elif group == "integration":
-        lines.append(
-            "🟣 Codex ha finito la sua parte. Sto aspettando controlli e integrazione."
-        )
-        lines.append("👉 Per ora non devi fare nulla.")
+        lines.append("🟣 Codex completato · integrazione/CI in corso.")
     elif group == "running":
-        lines.append("🔵 Codex sta lavorando su questo prompt.")
-        lines.append("👉 Per ora non devi fare nulla.")
+        lines.append("🔵 In esecuzione.")
     elif group == "waiting":
         unresolved = [str(dep) for dep in prompt.dependencies]
         suffix = " · ".join(unresolved[:3])
         if len(unresolved) > 3:
             suffix += " · …"
         lines.append(
-            "🟡 Questo prompt non è ancora pronto"
-            + (f": sta aspettando {suffix}." if suffix else ".")
+            "🟡 In attesa"
+            + (f" di {html.escape(suffix)}." if suffix else ".")
         )
-        lines.append("👉 Aspetta che le dipendenze passino.")
     elif group == "ready":
-        lines.append("🟢 Questo prompt è pronto.")
-        lines.append("👉 Se vuoi avviarlo, usa 🚀 Apri.")
+        lines.append("🟢 Pronto all'avvio.")
     elif group == "completed":
-        lines.append("✅ PASS. Questo prompt è chiuso e non richiede altro.")
+        lines.append("✅ PASS · chiuso.")
     else:
-        lines.append("⚪ Non riesco a tradurre questo stato in un'azione sicura.")
-        lines.append("👉 Controlla lo stato canonico prima di intervenire.")
-
-    has_chrome = bool(binding.get("context_id") and binding.get("url"))
-    has_codex = bool(binding.get("codex_thread") and binding.get("codex_deep_link"))
-    if not has_chrome:
-        lines.append(
-            f"🟠 Link Chrome mancante. Vuoi aggiungerlo? → {_action_url(prompt.prompt_id, 'bind-chrome')}"
-        )
-    if not has_codex:
-        lines.append(
-            f"🟠 Link Codex mancante. Vuoi aggiungerlo? → {_action_url(prompt.prompt_id, 'bind-codex')}"
-        )
-    if has_chrome and has_codex:
-        lines.append("🔗 Chrome e Codex sono collegati.")
+        lines.append("⚪ Stato non operativo: verifica la fonte canonica.")
 
     return lines
 
@@ -454,8 +434,8 @@ def _talking_lines(
 def _mapped_link(prompt_id: str, node_ids: dict[str, str]) -> str:
     node_id = node_ids.get(prompt_id)
     if not node_id:
-        return prompt_id
-    return f"{prompt_id} {workflowy_url(node_id)}"
+        return html.escape(prompt_id)
+    return _link(prompt_id, workflowy_url(node_id))
 
 
 def prompt_note(
@@ -469,7 +449,9 @@ def prompt_note(
     group: str | None = None,
     fix_packet: dict | None = None,
 ) -> str:
-    effective_group = group or dashboard_group(prompt, {prompt.prompt_id: prompt}, pipeline)
+    effective_group = group or dashboard_group(
+        prompt, {prompt.prompt_id: prompt}, pipeline
+    )
     lines = _talking_lines(
         prompt,
         group=effective_group,
@@ -477,113 +459,124 @@ def prompt_note(
         binding=binding,
         fix_packet=fix_packet,
     )
-    lines.extend(
-        [
-            "",
-            f"PROMPT_ID: {prompt.prompt_id}",
-            f"Stato canonico: {prompt.status}",
-        ]
+
+    action_links = " · ".join(
+        (
+            _link("🚀 Avvia", _action_url(prompt.prompt_id, "launch")),
+            _link("📋 Copia prompt", _action_url(prompt.prompt_id, "copy")),
+            _link("🔎 Verifica", _action_url(prompt.prompt_id, "verify")),
+        )
     )
-    outcome = str(prompt.last_outcome or "").upper()
-    if prompt.status == "running" and outcome in {"BLOCKED", "FAIL"}:
-        lines.append(
-            f"Esito operativo Codex: {outcome} · finalizzazione canonica in attesa"
-        )
-    if prompt.project_name:
-        lines.append(f"Progetto: {prompt.project_name}")
-    if prompt.model or prompt.reasoning:
-        lines.append(
-            "Modello: "
-            + " / ".join(x for x in (prompt.model, prompt.reasoning) if x)
-        )
-    if prompt.explanation:
-        lines.append(f"Spiegazione: {prompt.explanation}")
-    lines.append(f"🚀 Apri: {_action_url(prompt.prompt_id, 'launch')}")
-    lines.append(f"📋 Copia: {_action_url(prompt.prompt_id, 'copy')}")
-    lines.append(f"🔎 Verify: {_action_url(prompt.prompt_id, 'verify')}")
+    lines.extend(["", f"<b>Azioni</b>: {action_links}"])
 
     binding = binding or {}
     has_chrome = bool(binding.get("context_id") and binding.get("url"))
-    has_codex = bool(binding.get("codex_thread") and binding.get("codex_deep_link"))
+    has_codex = bool(
+        binding.get("codex_thread") and binding.get("codex_deep_link")
+    )
+    chrome_link = (
+        _link("Apri Chrome", _action_url(prompt.prompt_id, "chrome"))
+        if has_chrome
+        else _link("Associa Chrome", _action_url(prompt.prompt_id, "bind-chrome"))
+    )
+    codex_link = (
+        _link("Apri Codex", _action_url(prompt.prompt_id, "codex"))
+        if has_codex
+        else _link("Associa Codex", _action_url(prompt.prompt_id, "bind-codex"))
+    )
     lines.append(
-        "Link: "
-        + ("🌐 Chrome ✅" if has_chrome else "🌐 Chrome ❌")
+        "<b>Collegamenti</b>: "
+        + ("🌐 Chrome ✅ " if has_chrome else "🌐 Chrome ❌ ")
+        + chrome_link
         + " · "
-        + ("🧠 Codex ✅" if has_codex else "🧠 Codex ❌")
-    )
-    if not (has_chrome and has_codex):
-        missing = []
-        if not has_chrome:
-            missing.append("Chrome")
-        if not has_codex:
-            missing.append("Codex")
-        lines.append(f"🔗 Completa link: {_action_url(prompt.prompt_id, 'bind')}")
-        lines.append("Link mancanti: " + " · ".join(missing))
-
-    chrome_action = "Ricollega Chrome" if has_chrome else "Associa Chrome"
-    codex_action = "Ricollega Codex" if has_codex else "Associa Codex"
-    lines.append(
-        f"🌐 {chrome_action}: {_action_url(prompt.prompt_id, 'bind-chrome')}"
-    )
-    lines.append(
-        f"🧠 {codex_action}: {_action_url(prompt.prompt_id, 'bind-codex')}"
+        + ("🧠 Codex ✅ " if has_codex else "🧠 Codex ❌ ")
+        + codex_link
     )
 
-    if has_chrome:
-        lines.append(f"🌐 Chrome URL: {binding['url']}")
-        lines.append(f"↗ Apri Chrome: {_action_url(prompt.prompt_id, 'chrome')}")
-    if has_codex:
-        lines.append(f"🧠 Codex URL: {binding['codex_deep_link']}")
-        lines.append(f"↗ Apri Codex: {_action_url(prompt.prompt_id, 'codex')}")
-    if prompt.current_path:
-        lines.append(
-            f"Sorgente audit: https://github.com/{repository}/blob/{branch}/{prompt.current_path}"
+    details = [
+        f"ID {html.escape(prompt.prompt_id)}",
+        f"stato {html.escape(prompt.status)}",
+    ]
+    if prompt.project_name:
+        details.append(f"progetto {html.escape(prompt.project_name)}")
+    if prompt.model or prompt.reasoning:
+        model = " / ".join(
+            html.escape(str(x))
+            for x in (prompt.model, prompt.reasoning)
+            if x
         )
+        details.append(f"modello {model}")
+    lines.append("<b>Dettagli</b>: " + " · ".join(details))
+
+    outcome = str(prompt.last_outcome or "").upper()
+    if prompt.status == "running" and outcome in {"BLOCKED", "FAIL"}:
+        lines.append(
+            f"<b>Esito operativo</b>: {html.escape(outcome)} · "
+            "finalizzazione canonica in attesa"
+        )
+    if prompt.explanation:
+        lines.append(f"<b>Obiettivo</b>: {html.escape(prompt.explanation)}")
+
+    if prompt.current_path:
+        source_url = (
+            f"https://github.com/{repository}/blob/{branch}/{prompt.current_path}"
+        )
+        lines.append(f"<b>Sorgente</b>: {_link('GitHub', source_url)}")
+
     if pipeline:
+        pipeline_bits: list[str] = []
         state = pipeline.get("integration_state") or pipeline.get("pipeline_state")
         if state:
-            lines.append(f"Pipeline: {state}")
+            pipeline_bits.append(html.escape(str(state)))
         if pipeline.get("pr_url"):
-            lines.append(f"PR: {pipeline['pr_url']}")
+            pipeline_bits.append(_link("PR", str(pipeline["pr_url"])))
         if pipeline.get("queue_position") and pipeline.get("queue_size"):
-            lines.append(
-                f"Coda integrazione: {pipeline['queue_position']}/{pipeline['queue_size']}"
+            pipeline_bits.append(
+                "coda "
+                f"{html.escape(str(pipeline['queue_position']))}/"
+                f"{html.escape(str(pipeline['queue_size']))}"
             )
+        if pipeline_bits:
+            lines.append("<b>Pipeline</b>: " + " · ".join(pipeline_bits))
+
         pipeline_state = str(pipeline.get("pipeline_state") or "")
         if prompt.status == "completed" and pipeline_state not in {"", "done"}:
             lines.append(
-                f"⚠ State mismatch: roadmap=completed · pipeline={pipeline_state}"
+                "⚠ <b>State mismatch</b>: roadmap=completed · "
+                f"pipeline={html.escape(pipeline_state)}"
             )
         elif prompt.status == "running" and pipeline_state == "done":
-            lines.append("Finalizzazione roadmap PASS in coda")
+            lines.append("Finalizzazione roadmap PASS in coda.")
+
     if prompt.dependencies:
         lines.append(
-            "Dipende da: "
+            "<b>Dipende da</b>: "
             + " · ".join(_mapped_link(x, node_ids) for x in prompt.dependencies)
         )
     if prompt.dependents:
         lines.append(
-            "Sblocca: "
+            "<b>Sblocca</b>: "
             + " · ".join(_mapped_link(x, node_ids) for x in prompt.dependents)
         )
     if prompt.relations_out:
         lines.append(
-            "Relazioni →: "
+            "<b>Relazioni →</b>: "
             + " · ".join(
-                f"{kind}:{_mapped_link(pid, node_ids)}"
+                f"{html.escape(kind)}:{_mapped_link(pid, node_ids)}"
                 for kind, pid in prompt.relations_out
             )
         )
     if prompt.relations_in:
         lines.append(
-            "Relazioni ←: "
+            "<b>Relazioni ←</b>: "
             + " · ".join(
-                f"{kind}:{_mapped_link(pid, node_ids)}"
+                f"{html.escape(kind)}:{_mapped_link(pid, node_ids)}"
                 for kind, pid in prompt.relations_in
             )
         )
+
     lines.append(
-        "Override manuale d'emergenza: R=running · P=PASS · B=BLOCKED · F=FAIL."
+        "<b>Esito manuale</b>: R=running · P=PASS · B=BLOCKED · F=FAIL"
     )
     tags = " ".join(
         tag
