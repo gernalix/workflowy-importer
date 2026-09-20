@@ -286,8 +286,8 @@ class RoadmapBridgeTests(unittest.TestCase):
             self.assertEqual(needs_fix["id"], prompt_node["parent_id"])
             self.assertIn("Needs fix (1)", group_names)
             self.assertIn("Running (0)", group_names)
-            self.assertIn("Stato canonico: running", prompt_node["note"])
-            self.assertIn("Esito operativo Codex: BLOCKED", prompt_node["note"])
+            self.assertIn("<b>Dettagli</b>: ID 123456 · stato running", prompt_node["note"])
+            self.assertIn("<b>Esito operativo</b>: BLOCKED", prompt_node["note"])
             self.assertIn("GitHub API rate limit", prompt_node["note"])
             self.assertEqual(1, result["warnings"])
             db.close()
@@ -363,12 +363,12 @@ class RoadmapBridgeTests(unittest.TestCase):
                 if str(node["name"]).startswith("[123456]")
             )
             self.assertEqual("[123456] 🟢 <b>Parent</b>", prompt_node["name"])
-            self.assertIn("🟢 Questo prompt è pronto.", prompt_node["note"])
-            self.assertIn("🟠 Link Chrome mancante. Vuoi aggiungerlo?", prompt_node["note"])
-            self.assertIn("🟠 Link Codex mancante. Vuoi aggiungerlo?", prompt_node["note"])
+            self.assertIn("🟢 Pronto all'avvio.", prompt_node["note"])
+            self.assertIn("🌐 Chrome ❌", prompt_node["note"])
+            self.assertIn("🧠 Codex ❌", prompt_node["note"])
             self.assertIn("#status_pending", prompt_node["note"])
-            self.assertIn("Sblocca:", prompt_node["note"])
-            self.assertIn("Relazioni →:", prompt_node["note"])
+            self.assertIn("<b>Sblocca</b>:", prompt_node["note"])
+            self.assertIn("<b>Relazioni →</b>:", prompt_node["note"])
             group_names = {str(node["name"]) for node in client.nodes}
             self.assertIn("Ready (1)", group_names)
             self.assertIn("Waiting (1)", group_names)
@@ -433,22 +433,35 @@ class RoadmapBridgeTests(unittest.TestCase):
                 if str(node["name"]).startswith("Integration (")
             )
             self.assertEqual(integration["id"], prompt_node["parent_id"])
-            self.assertIn("📋 Copia:", prompt_node["note"])
-            self.assertIn("🌐 Chrome URL: https://chatgpt.com/c/example", prompt_node["note"])
-            self.assertIn("↗ Apri Chrome:", prompt_node["note"])
-            self.assertIn("🧠 Codex URL: codex://threads/thread-1", prompt_node["note"])
-            self.assertIn("Link: 🌐 Chrome ✅ · 🧠 Codex ✅", prompt_node["note"])
-            self.assertNotIn("🔗 Completa link:", prompt_node["note"])
+            self.assertIn("<b>Azioni</b>:", prompt_node["note"])
             self.assertIn(
-                "🌐 Ricollega Chrome: http://127.0.0.1:43817/ui/prompt/123456/bind-chrome",
+                '<a href="http://127.0.0.1:43817/ui/prompt/123456/launch">🚀 Avvia</a>',
                 prompt_node["note"],
             )
             self.assertIn(
-                "🧠 Ricollega Codex: http://127.0.0.1:43817/ui/prompt/123456/bind-codex",
+                '<a href="http://127.0.0.1:43817/ui/prompt/123456/copy">📋 Copia prompt</a>',
                 prompt_node["note"],
             )
-            self.assertIn("🔎 Verify: http://127.0.0.1:43817/ui/prompt/123456/verify", prompt_node["note"])
-            self.assertIn("Coda integrazione: 1/2", prompt_node["note"])
+            self.assertIn(
+                '<a href="http://127.0.0.1:43817/ui/prompt/123456/verify">🔎 Verifica</a>',
+                prompt_node["note"],
+            )
+            self.assertIn(
+                '<b>Collegamenti</b>: 🌐 Chrome ✅ '
+                '<a href="http://127.0.0.1:43817/ui/prompt/123456/chrome">Apri Chrome</a> · '
+                '🧠 Codex ✅ '
+                '<a href="http://127.0.0.1:43817/ui/prompt/123456/codex">Apri Codex</a>',
+                prompt_node["note"],
+            )
+            self.assertIn(
+                '<b>Pipeline</b>: checks-pending · '
+                '<a href="https://github.com/gernalix/example/pull/27">PR</a> · coda 1/2',
+                prompt_node["note"],
+            )
+            self.assertNotIn("Chrome URL:", prompt_node["note"])
+            self.assertNotIn("Codex URL:", prompt_node["note"])
+            self.assertNotIn("/bind-chrome", prompt_node["note"])
+            self.assertNotIn("/bind-codex", prompt_node["note"])
             db.close()
 
     def test_incomplete_binding_exposes_late_link_recovery(self):
@@ -474,21 +487,16 @@ class RoadmapBridgeTests(unittest.TestCase):
                 if str(node["name"]).startswith("[123456]")
             )
             self.assertIn(
-                "🔗 Completa link: http://127.0.0.1:43817/ui/prompt/123456/bind",
+                '<b>Collegamenti</b>: 🌐 Chrome ✅ '
+                '<a href="http://127.0.0.1:43817/ui/prompt/123456/chrome">Apri Chrome</a> · '
+                '🧠 Codex ❌ '
+                '<a href="http://127.0.0.1:43817/ui/prompt/123456/bind-codex">Associa Codex</a>',
                 prompt_node["note"],
             )
-            self.assertIn("Link: 🌐 Chrome ✅ · 🧠 Codex ❌", prompt_node["note"])
-            self.assertIn("Link mancanti: Codex", prompt_node["note"])
-            self.assertIn(
-                "🌐 Ricollega Chrome: http://127.0.0.1:43817/ui/prompt/123456/bind-chrome",
-                prompt_node["note"],
-            )
-            self.assertIn(
-                "🧠 Associa Codex: http://127.0.0.1:43817/ui/prompt/123456/bind-codex",
-                prompt_node["note"],
-            )
-            self.assertIn("🌐 Chrome URL: https://chatgpt.com/c/example", prompt_node["note"])
-            self.assertNotIn("🧠 Codex URL:", prompt_node["note"])
+            self.assertNotIn("Link mancanti:", prompt_node["note"])
+            self.assertNotIn("Chrome URL:", prompt_node["note"])
+            self.assertNotIn("Codex URL:", prompt_node["note"])
+            self.assertNotIn("/ui/prompt/123456/bind\"", prompt_node["note"])
             db.close()
 
     def test_codex_first_binding_is_visible_and_chrome_recoverable(self):
@@ -513,17 +521,16 @@ class RoadmapBridgeTests(unittest.TestCase):
                 node for node in client.nodes
                 if str(node["name"]).startswith("[123456]")
             )
-            self.assertIn("Link: 🌐 Chrome ❌ · 🧠 Codex ✅", prompt_node["note"])
-            self.assertIn("Link mancanti: Chrome", prompt_node["note"])
             self.assertIn(
-                "🌐 Associa Chrome: http://127.0.0.1:43817/ui/prompt/123456/bind-chrome",
+                '<b>Collegamenti</b>: 🌐 Chrome ❌ '
+                '<a href="http://127.0.0.1:43817/ui/prompt/123456/bind-chrome">Associa Chrome</a> · '
+                '🧠 Codex ✅ '
+                '<a href="http://127.0.0.1:43817/ui/prompt/123456/codex">Apri Codex</a>',
                 prompt_node["note"],
             )
-            self.assertIn(
-                "🧠 Ricollega Codex: http://127.0.0.1:43817/ui/prompt/123456/bind-codex",
-                prompt_node["note"],
-            )
-            self.assertIn("🧠 Codex URL: codex://threads/thread-1", prompt_node["note"])
+            self.assertNotIn("Link mancanti:", prompt_node["note"])
+            self.assertNotIn("Chrome URL:", prompt_node["note"])
+            self.assertNotIn("Codex URL:", prompt_node["note"])
             db.close()
 
     def test_blocked_prompt_talks_in_plain_language_from_fix_packet(self):
@@ -562,15 +569,15 @@ class RoadmapBridgeTests(unittest.TestCase):
             self.assertIn("<b>Parent</b>", prompt_node["name"])
             self.assertEqual("h3", prompt_node["data"]["layoutMode"])
             self.assertIn(
-                "🔴 Codex si è fermato prima di completare il lavoro con PASS.",
+                "🔴 BLOCKED · Codex si è fermato prima del PASS.",
                 prompt_node["note"],
             )
             self.assertIn(
-                "💬 In breve: Runtime heartbeat is stale; GNOME companion did not answer.",
+                "<b>Blocco</b>: Runtime heartbeat is stale; GNOME companion did not answer.",
                 prompt_node["note"],
             )
             self.assertIn(
-                "👉 Prossimo passo consigliato: Restart the local companion and run Verify again.",
+                "<b>Prossimo passo</b>: Restart the local companion and run Verify again.",
                 prompt_node["note"],
             )
             db.close()
@@ -591,7 +598,7 @@ class RoadmapBridgeTests(unittest.TestCase):
                 if str(node["name"]).startswith("[123456]")
             )
             self.assertIn(
-                "Non ho ancora un riassunto affidabile del motivo",
+                "<b>Blocco</b>: causa non ancora disponibile.",
                 prompt_node["note"],
             )
             db.close()
