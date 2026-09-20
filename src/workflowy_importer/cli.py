@@ -208,7 +208,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--secret-file",
         type=Path,
         default=DEFAULT_SECRET_FILE,
-        help="Protected Workflowy API key file (default: ~/.config/codex/secrets/workflowy-api-key)",
+        help="Legacy protected API-key file used only after systemd/Secret Service/env providers",
+    )
+    parser.add_argument(
+        "--credential-provider",
+        choices=("auto", "systemd", "secret-service", "env", "legacy-file"),
+        default="auto",
+        help="Credential provider (default: auto = systemd, Secret Service, env, legacy file)",
     )
     parser.add_argument(
         "--api-key-env",
@@ -246,6 +252,7 @@ def run(args: argparse.Namespace) -> int:
     api_key = load_api_key(
         secret_file=args.secret_file,
         env_var=args.api_key_env,
+        provider=args.credential_provider,
     )
 
     state_path = (
