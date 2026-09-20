@@ -51,6 +51,7 @@ STATUS_GROUP_KEY = {
 DEFAULT_REPO_TASK = Path.home() / "projects" / "github-autosync" / "repo_single_writer.py"
 DEFAULT_CCS_URL = "http://127.0.0.1:43817"
 LEGACY_GROUP_KEYS = ("pending", "failed", "cancelled", "superseded")
+PROMPT_NODE_RE = re.compile(r"^\[(\d{6})\]\s")
 
 
 @dataclass(slots=True)
@@ -707,6 +708,110 @@ def _mapping_set(
     )
 
 
+def _prompt_id_from_name(name: object) -> str | None:
+    match = PROMPT_NODE_RE.match(str(name or ""))
+    return match.group(1) if match else None
+
+
+def _group_name_matches(name: object, label: str) -> bool:
+    return bool(
+        re.fullmatch(
+            rf"{re.escape(label)}(?: \(\d+\))?",
+            str(name or "").strip(),
+        )
+    )
+
+
+def _hydrate_mapped_nodes(
+    client: WorkflowyClient,
+    db: sqlite3.Connection,
+    by_id: dict[str, dict],
+    keys: list[str],
+) -> None:
+    """Verify mapped nodes directly before treating an export miss as deletion."""
+    for key in keys:
+        mapped = _mapping_get(db, key)
+        if not mapped:
+            continue
+        node_id = mapped[0]
+        if node_id in by_id:
+            continue
+        try:
+            node = client.get_node(node_id)
+        except WorkflowyAPIError as exc:
+            if exc.status_code == 404:
+                continue
+            raise
+        if isinstance(node, dict) and node.get("id"):
+            by_id[node_id] = node
+
+
+def _reconcile_prompt_duplicates(
+    client: WorkflowyClient,
+    db: sqlite3.Connection,
+    by_id: dict[str, dict],
+    existing_ids: set[str],
+    children_by_parent: dict[str, list[dict]],
+    prompt_by_id: dict[str, RoadmapPrompt],
+    group_ids: dict[str, str],
+) -> int:
+    """Adopt existing projection nodes and collapse duplicate prompt bullets."""
+    group_node_ids = set(group_ids.values())
+    candidates: dict[str, list[dict]] = {}
+    for node in list(by_id.values()):
+        if str(node.get("parent_id") or "") not in group_node_ids:
+            continue
+        prompt_id = _prompt_id_from_name(node.get("name"))
+        if prompt_id in prompt_by_id:
+            candidates.setdefault(prompt_id, []).append(node)
+
+    deleted = 0
+    for prompt_id in prompt_by_id:
+        mapped = _mapping_get(db, prompt_id)
+        canonical_id = (
+            mapped[0]
+            if mapped and mapped[0] in existing_ids
+            else None
+        )
+        prompt_candidates = candidates.get(prompt_id, [])
+        if canonical_id is None and prompt_candidates:
+            # Prefer the node carrying child state/commands; otherwise keep a
+            # stable existing node instead of creating another projection.
+            canonical = max(
+                prompt_candidates,
+                key=lambda node: (
+                    len(children_by_parent.get(str(node["id"]), [])),
+                    str(node["id"]),
+                ),
+            )
+            canonical_id = str(canonical["id"])
+            _mapping_set(db, prompt_id, canonical_id, {})
+
+        if canonical_id is None:
+            continue
+
+        for duplicate in prompt_candidates:
+            duplicate_id = str(duplicate["id"])
+            if duplicate_id == canonical_id:
+                continue
+
+            # Preserve every child before removing a generated duplicate.
+            moved_children = list(children_by_parent.get(duplicate_id, []))
+            for child in moved_children:
+                child_id = str(child["id"])
+                client.move_node(child_id, canonical_id, position="bottom")
+                child["parent_id"] = canonical_id
+                children_by_parent.setdefault(canonical_id, []).append(child)
+            children_by_parent.pop(duplicate_id, None)
+
+            client.delete_node(duplicate_id)
+            by_id.pop(duplicate_id, None)
+            existing_ids.discard(duplicate_id)
+            deleted += 1
+
+    return deleted
+
+
 def _ensure_mapped_node(
     client: WorkflowyClient,
     db: sqlite3.Connection,
@@ -822,12 +927,54 @@ def sync_roadmap(
         for node in exported
         if isinstance(node, dict) and node.get("id")
     }
+
+    # Workflowy's export can lag behind successful mutations. A missing mapped
+    # node is therefore verified through the single-node endpoint before the
+    # projector is allowed to recreate it.
+    mapping_keys = (
+        [ROADMAP_ROOT_KEY]
+        + [GROUP_PREFIX + key for key, _ in DASHBOARD_GROUPS]
+        + [GROUP_PREFIX + key for key in LEGACY_GROUP_KEYS]
+        + [prompt.prompt_id for prompt in prompts]
+    )
+    _hydrate_mapped_nodes(client, db, by_id, mapping_keys)
+
     existing_ids = set(by_id)
     children_by_parent: dict[str, list[dict]] = {}
-    for node in exported:
+    for node in by_id.values():
         parent_id = node.get("parent_id")
         if parent_id:
             children_by_parent.setdefault(str(parent_id), []).append(node)
+
+    root_mapped = _mapping_get(db, ROADMAP_ROOT_KEY)
+    if not root_mapped or root_mapped[0] not in existing_ids:
+        root_candidates = [
+            node
+            for node in by_id.values()
+            if str(node.get("parent_id") or "") == parent
+            and str(node.get("name") or "").strip() == "Codex"
+            and (
+                "roadmap Codex" in str(node.get("note") or "")
+                or any(
+                    _group_name_matches(child.get("name"), label)
+                    for child in children_by_parent.get(str(node["id"]), [])
+                    for _key, label in DASHBOARD_GROUPS
+                )
+            )
+        ]
+        if root_candidates:
+            root_candidate = max(
+                root_candidates,
+                key=lambda node: len(
+                    children_by_parent.get(str(node["id"]), [])
+                ),
+            )
+            _mapping_set(
+                db,
+                ROADMAP_ROOT_KEY,
+                str(root_candidate["id"]),
+                {},
+            )
 
     root_id, _ = _ensure_mapped_node(
         client,
@@ -870,6 +1017,26 @@ def sync_roadmap(
     group_ids: dict[str, str] = {}
     for key, label in DASHBOARD_GROUPS:
         desired_name = f"{label} ({group_counts[key]})"
+        mapped_group = _mapping_get(db, GROUP_PREFIX + key)
+        if not mapped_group or mapped_group[0] not in existing_ids:
+            group_candidates = [
+                node
+                for node in children_by_parent.get(root_id, [])
+                if _group_name_matches(node.get("name"), label)
+            ]
+            if group_candidates:
+                candidate = max(
+                    group_candidates,
+                    key=lambda node: len(
+                        children_by_parent.get(str(node["id"]), [])
+                    ),
+                )
+                _mapping_set(
+                    db,
+                    GROUP_PREFIX + key,
+                    str(candidate["id"]),
+                    {},
+                )
         group_id, _ = _ensure_mapped_node(
             client,
             db,
@@ -907,6 +1074,16 @@ def sync_roadmap(
                 client.update_node(legacy_id, desired_name)
             if str(current_group.get("parent_id") or "") != archive_id:
                 client.move_node(legacy_id, archive_id, position="bottom")
+
+    duplicates_deleted = _reconcile_prompt_duplicates(
+        client,
+        db,
+        by_id,
+        existing_ids,
+        children_by_parent,
+        prompt_by_id,
+        group_ids,
+    )
 
     node_ids: dict[str, str] = {}
     created = 0
@@ -1110,6 +1287,7 @@ def sync_roadmap(
         "created": created,
         "updated": updated,
         "moved": moved,
+        "duplicates_deleted": duplicates_deleted,
         "mutations_submitted": submitted,
         "fix_prompts_created": fix_prompts,
         "fix_packets_submitted": fix_packets_submitted,
