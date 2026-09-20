@@ -20,24 +20,24 @@ python -m pip install -e .
 
 ## API key
 
-The canonical location is:
+Credential access is provider-based rather than hard-wired to one plaintext file. In automatic mode the resolver uses, in order:
 
-```text
-~/.config/codex/secrets/workflowy-api-key
-```
+1. a systemd credential named `workflowy-api-key` from `$CREDENTIALS_DIRECTORY`;
+2. the desktop Secret Service/libsecret entry identified by `application=workflowy-importer`, `credential=workflowy-api-key`;
+3. an already-set ephemeral `WORKFLOWY_API_KEY` environment variable;
+4. the legacy protected file `~/.config/codex/secrets/workflowy-api-key`.
 
-It must be a regular, non-symlink file owned by the current user with permissions exactly `0600`.
+The legacy file is kept only for migration/backward compatibility. New interactive Fedora setups should use Secret Service; systemd services should use `LoadCredential=` or `LoadCredentialEncrypted=`. The program never prints or persists the key.
 
-Example setup:
+To store the current key in Secret Service without putting it on a command line, run:
 
 ```bash
-mkdir -p ~/.config/codex/secrets
-chmod 700 ~/.config/codex/secrets
-printf '%s' 'PASTE_KEY_HERE' > ~/.config/codex/secrets/workflowy-api-key
-chmod 600 ~/.config/codex/secrets/workflowy-api-key
+secret-tool store --label='Workflowy API key' application workflowy-importer credential workflowy-api-key
 ```
 
-The programs never print or persist the key. If the canonical file is absent, an already-set `WORKFLOWY_API_KEY` environment variable is accepted as a fallback. If the file exists but is insecure, execution fails closed instead of falling back.
+Enter the value on stdin when prompted. Verify the new provider before deleting any legacy file.
+
+Use `--credential-provider` (or `WORKFLOWY_CREDENTIAL_PROVIDER`) to force one provider and fail closed instead of falling back.
 
 ## Markdown importer
 
