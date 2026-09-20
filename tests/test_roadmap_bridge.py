@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 from workflowy_importer import bridge_cli
 from workflowy_importer.bridge import _roadmap_fix_packet, _roadmap_prompt_text
+from workflowy_importer.api import WorkflowyAPIError
 from workflowy_importer.cache import connect
 from workflowy_importer.fix_packets import load_fix_packet, load_latest_terminal_outcome
 from workflowy_importer.roadmap_bridge import (
@@ -150,6 +151,19 @@ class FakeClient:
                 node["parent_id"] = parent_id
                 return
         raise AssertionError(f"missing node {node_id}")
+
+
+    def get_node(self, node_id: str) -> dict:
+        for node in self.nodes:
+            if node["id"] == node_id:
+                return dict(node)
+        raise WorkflowyAPIError("missing", status_code=404)
+
+    def delete_node(self, node_id: str) -> None:
+        before = len(self.nodes)
+        self.nodes = [node for node in self.nodes if node["id"] != node_id]
+        if len(self.nodes) == before:
+            raise AssertionError(f"missing node {node_id}")
 
 
 class RoadmapBridgeTests(unittest.TestCase):
@@ -395,6 +409,119 @@ class RoadmapBridgeTests(unittest.TestCase):
             self.assertEqual("running", submitted[-1][0]["operations"][0]["status"])
             db.close()
 
+
+    def test_sync_recovers_lost_mappings_and_deduplicates_projection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(Path(tmp) / "cache.sqlite")
+            client = FakeClient()
+            submit = lambda doc, key: {"status": "ok"}
+
+            sync_roadmap(
+                client,
+                db,
+                raw_roadmap_db=roadmap_bytes(),
+                submitter=submit,
+            )
+            ready = next(
+                node for node in client.nodes
+                if str(node["name"]).startswith("Ready (")
+            )
+            parent = next(
+                node for node in client.nodes
+                if str(node["name"]).startswith("[123456]")
+            )
+            duplicate_id = client.create_node(
+                ready["id"],
+                parent["name"],
+                note=parent["note"],
+            )
+            client.create_node(duplicate_id, "R")
+
+            # Simulate a lost/recreated local mapping cache: the projector must
+            # rediscover the existing dashboard rather than append another copy.
+            db.execute(
+                "DELETE FROM mappings WHERE namespace=?",
+                ("codex-roadmap",),
+            )
+            db.commit()
+
+            result = sync_roadmap(
+                client,
+                db,
+                raw_roadmap_db=roadmap_bytes(),
+                submitter=submit,
+            )
+
+            prompt_nodes = [
+                node for node in client.nodes
+                if str(node["name"]).startswith("[123456]")
+            ]
+            self.assertEqual(1, len(prompt_nodes))
+            self.assertEqual(1, result["duplicates_deleted"])
+            self.assertTrue(
+                any(
+                    child["parent_id"] == prompt_nodes[0]["id"]
+                    and child["name"] == "R"
+                    for child in client.nodes
+                )
+            )
+            self.assertEqual(
+                1,
+                len([node for node in client.nodes if node["name"] == "Codex"]),
+            )
+            self.assertEqual(
+                1,
+                len(
+                    [
+                        node for node in client.nodes
+                        if str(node["name"]).startswith("Ready (")
+                    ]
+                ),
+            )
+            db.close()
+
+    def test_mapped_node_missing_from_export_is_verified_before_recreate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(Path(tmp) / "cache.sqlite")
+            client = FakeClient()
+            submit = lambda doc, key: {"status": "ok"}
+
+            sync_roadmap(
+                client,
+                db,
+                raw_roadmap_db=roadmap_bytes(),
+                submitter=submit,
+            )
+            prompt_node = next(
+                node for node in client.nodes
+                if str(node["name"]).startswith("[123456]")
+            )
+            prompt_node_id = prompt_node["id"]
+            real_export = client.export_nodes
+            client.export_nodes = lambda: [
+                node
+                for node in real_export()
+                if node["id"] != prompt_node_id
+            ]
+
+            result = sync_roadmap(
+                client,
+                db,
+                raw_roadmap_db=roadmap_bytes(),
+                submitter=submit,
+            )
+
+            self.assertEqual(0, result["created"])
+            self.assertEqual(
+                1,
+                len(
+                    [
+                        node for node in client.nodes
+                        if str(node["name"]).startswith("[123456]")
+                    ]
+                ),
+            )
+            db.close()
 
     def test_running_repo_task_moves_to_integration_group(self):
         with tempfile.TemporaryDirectory() as tmp:
