@@ -129,7 +129,7 @@ def load_api_key(
             return value
         raise CredentialError(f"Workflowy API key unavailable from provider: {selected}")
 
-    for name in ("systemd", "secret-service", "env", "legacy-file"):
+    for name in ("systemd", "secret-service", "legacy-file", "env"):
         value = resolve(name)
         if value:
             return value
