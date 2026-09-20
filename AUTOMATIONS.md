@@ -98,3 +98,5 @@ Then load `browser-extension/` as an unpacked Chromium extension and click it on
 - weekly review.
 
 They are templates only until installed/enabled on the target Fedora account.
+
+For the canonical Fedora runtime, `python3 deploy_runtime.py` copies changed user units, enables the bridge and roadmap-sync timer, restarts the long-lived bridge, and triggers one immediate roadmap sync. `github-autosync` calls this helper automatically after a new `workflowy-importer` revision reaches the canonical checkout.
