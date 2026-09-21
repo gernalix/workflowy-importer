@@ -4,6 +4,7 @@ Description=Create Workflowy weekly review
 [Service]
 Type=oneshot
 WorkingDirectory=%h/projects/workflowy-importer
-ExecStart=%h/projects/workflowy-importer/.venv/bin/wf weekly-review --days 7 --parent today
+Environment=PYTHONPATH=%h/projects/workflowy-importer/src
+ExecStart=/usr/bin/python3 -m workflowy_importer.bridge_cli weekly-review --days 7 --parent today
 NoNewPrivileges=true
 PrivateTmp=true

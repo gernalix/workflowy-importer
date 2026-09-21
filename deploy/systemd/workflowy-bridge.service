@@ -1,12 +1,15 @@
 [Unit]
 Description=Workflowy localhost automation bridge
 After=network-online.target
+StartLimitIntervalSec=5min
+StartLimitBurst=10
 
 [Service]
 Type=simple
 WorkingDirectory=%h/projects/workflowy-importer
-ExecStart=%h/projects/workflowy-importer/.venv/bin/wf serve
-Restart=on-failure
+Environment=PYTHONPATH=%h/projects/workflowy-importer/src
+ExecStart=/usr/bin/python3 -m workflowy_importer.bridge_cli serve
+Restart=always
 RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
