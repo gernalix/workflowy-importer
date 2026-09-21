@@ -5,6 +5,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=%h/projects/workflowy-importer
-ExecStart=%h/projects/workflowy-importer/.venv/bin/wf roadmap-sync
+Environment=PYTHONPATH=%h/projects/workflowy-importer/src
+ExecStart=/usr/bin/python3 -m workflowy_importer.bridge_cli roadmap-sync
 NoNewPrivileges=true
 PrivateTmp=true
