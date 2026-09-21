@@ -8,15 +8,17 @@ See [AUTOMATIONS.md](AUTOMATIONS.md) for the map of the 30 automation ideas.
 
 ## Install
 
-Requires Python 3.11+.
+Requires Python 3.11+. This Fedora setup uses the global Python environment; project-local virtual environments are intentionally not used.
 
 ```bash
 git clone https://github.com/gernalix/workflowy-importer.git
 cd workflowy-importer
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
+sudo dnf install python3-httpx python3-markdown-it-py
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+python3 -m workflowy_importer.bridge_cli --help
 ```
+
+The systemd templates set `PYTHONPATH` themselves and execute `/usr/bin/python3 -m workflowy_importer.bridge_cli`, so they do not depend on a `.venv` or a project-specific Python interpreter.
 
 ## API key
 
