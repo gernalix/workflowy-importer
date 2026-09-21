@@ -56,6 +56,29 @@ def _roadmap_prompt_text(roadmap_dir: Path, prompt_id: str) -> tuple[str, str] |
     return path.read_text(encoding="utf-8"), rel
 
 
+def _roadmap_prompt_metadata(roadmap_dir: Path, prompt_id: str) -> dict:
+    if not re.fullmatch(r"\d{6}", prompt_id):
+        return {}
+    db_path = roadmap_dir.expanduser() / "roadmap.sqlite"
+    if not db_path.is_file():
+        return {}
+    conn = sqlite3.connect(f"file:{db_path.resolve()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """SELECT project_id,project_name,repo,chat_guidance,prompt_type,model,reasoning
+               FROM prompts WHERE prompt_id=?""",
+            (prompt_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return {}
+    finally:
+        conn.close()
+    if not row:
+        return {}
+    return {key: row[key] for key in row.keys()}
+
+
 def _roadmap_fix_packet(roadmap_dir: Path, prompt_id: str) -> dict | None:
     """Read the latest publisher packet from the canonical roadmap DB."""
     if not re.fullmatch(r"\d{6}", prompt_id):
@@ -159,12 +182,14 @@ def serve(
                     self._reply(404, {"error": "prompt not found"})
                     return
                 prompt_text, source = found
+                metadata = _roadmap_prompt_metadata(roadmap_dir, match.group(1))
                 self._reply(
                     200,
                     {
                         "prompt_id": match.group(1),
                         "prompt_text": prompt_text,
                         "source": source,
+                        **metadata,
                     },
                 )
                 return
