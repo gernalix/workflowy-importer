@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,7 @@ from workflowy_importer.cache import connect, duplicate_groups, refresh_cache, s
 from workflowy_importer.chatgpt import conversation_to_markdown
 from workflowy_importer.credentials import CredentialError, load_api_key
 from workflowy_importer.links import workflowy_url
+from workflowy_importer.bridge import _roadmap_prompt_metadata
 
 
 class CredentialTests(unittest.TestCase):
@@ -102,6 +104,42 @@ class LinkTests(unittest.TestCase):
             ),
             "https://workflowy.com/#/d8754237b505",
         )
+
+
+class RoadmapLaunchMetadataTests(unittest.TestCase):
+    def test_reads_canonical_codex_launch_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = sqlite3.connect(root / "roadmap.sqlite")
+            db.execute(
+                """CREATE TABLE prompts (
+                     prompt_id TEXT PRIMARY KEY,
+                     project_id TEXT,
+                     project_name TEXT,
+                     repo TEXT,
+                     chat_guidance TEXT,
+                     prompt_type TEXT,
+                     model TEXT,
+                     reasoning TEXT
+                   )"""
+            )
+            db.execute(
+                """INSERT INTO prompts VALUES (?,?,?,?,?,?,?,?)""",
+                (
+                    "604812", "23", "chrome-codex-switcher",
+                    "gernalix/chrome-codex-switcher", "new chat", "Prompt",
+                    "gpt-5.6-terra", "medium",
+                ),
+            )
+            db.commit()
+            db.close()
+
+            metadata = _roadmap_prompt_metadata(root, "604812")
+            self.assertEqual(metadata["project_id"], "23")
+            self.assertEqual(metadata["repo"], "gernalix/chrome-codex-switcher")
+            self.assertEqual(metadata["model"], "gpt-5.6-terra")
+            self.assertEqual(metadata["reasoning"], "medium")
+
 
 
 class ChatGPTTests(unittest.TestCase):
