@@ -230,6 +230,8 @@ La dashboard combina roadmap + stato reale di `github-autosync` + binding di `ch
 - `Done`: PASS canonico;
 - `Archive`: stati storici/non operativi.
 
+Quando un prompt **entra** in `Ready`, `roadmap-sync` invia una notifica Telegram per quel task. Lo stato della transizione è persistito nel cache SQLite: i sync successivi non duplicano l'avviso, un task che esce e poi rientra in `Ready` viene notificato di nuovo, e un invio fallito viene ritentato. Il primo sync dopo l'attivazione registra i task già `Ready` come baseline senza inviare una raffica retroattiva. Il runtime usa il notifier Telegram condiviso con `project_id=96` e la credenziale `telegram.env` caricata dal servizio systemd.
+
 Ogni prompt espone azioni operative nella nota: `🚀 Apri`, `📋 Copia`, `🌐 ChatGPT` quando esiste il binding Chrome, e il deep link `🧠 Codex` quando CCS lo conosce. `PROMPT_ID` è la chiave comune e non viene mai dedotto da URL o titoli.
 
 Sotto un prompt usa **un solo nodo figlio di stato**:
