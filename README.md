@@ -226,7 +226,7 @@ La dashboard combina roadmap + stato reale di `github-autosync` + binding di `ch
 - `Waiting`: prompt pendenti ancora dipendenti da altri task o da prerequisiti manuali, mantenendo lo stesso ordine canonico;
 - `Running`: Codex ha realmente acquisito il prompt;
 - `Integration`: worker finito, PR/CI/rebase/merge gestiti asincronamente;
-- `Needs fix`: BLOCKED/FAIL o hard blocker dell'integratore;
+- `Needs fix`: solo BLOCKED/FAIL operativi ancora senza un successore correttivo attivo/completato, oppure hard blocker dell'integratore; failure storici o già sostituiti restano in `Archive`;
 - `Done`: PASS canonico;
 - `Archive`: stati storici/non operativi.
 
