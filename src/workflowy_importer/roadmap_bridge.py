@@ -344,7 +344,7 @@ def dashboard_group(
     pipeline: dict | None,
 ) -> str:
     if prompt.status in {"blocked", "failed"}:
-        if not str(prompt.current_path or "").strip():
+        if not str(prompt.project_name or "").strip() or not str(prompt.current_path or "").strip():
             return "unknown"
         if _failure_has_live_successor(prompt, prompt_by_id):
             return "unknown"
