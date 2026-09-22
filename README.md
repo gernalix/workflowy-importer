@@ -225,7 +225,8 @@ La dashboard combina roadmap + stato reale di `github-autosync` + binding di `ch
 - `Ready`: prompt pendenti con dipendenze e prerequisiti manuali soddisfatti, sempre nell'ordine canonico `queue_position` di `roadmap.sqlite`;
 - `Waiting`: prompt pendenti ancora dipendenti da altri task o da prerequisiti manuali, mantenendo lo stesso ordine canonico;
 - `Running`: Codex ha realmente acquisito il prompt;
-- `Integration`: worker finito, PR/CI/rebase/merge gestiti asincronamente;
+- `Integration`: worker finito, PR/CI/rebase/merge gestiti asincronamente. La sezione mostra anche una mini-dashboard dell'integratore con conteggio task, posizione in coda e una barra a fasi basata esclusivamente sugli stati reali `queued → checks-pending → rebasing → merge-wait/integrating → merged` (20/40/60/80/100%). Non è una stima del tempo residuo;
+- ogni task con pipeline attiva mostra la stessa barra nella propria nota, insieme a PR, coda e `integration_reason` quando presente;
 - `Needs fix`: solo BLOCKED/FAIL operativi ancora senza un successore correttivo attivo/completato, oppure hard blocker dell'integratore; failure storici o già sostituiti restano in `Archive`;
 - `Done`: PASS canonico;
 - `Archive`: stati storici/non operativi.
