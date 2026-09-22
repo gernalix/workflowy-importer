@@ -534,6 +534,103 @@ DASHBOARD_MARKERS = {
     "unknown": "⚪",
 }
 
+INTEGRATOR_PHASES = {
+    "queued": (1, "In coda"),
+    "queued-behind-earlier": (1, "In coda"),
+    "checks-pending": (2, "Controlli CI"),
+    "checks-failed": (2, "Controlli CI"),
+    "rebasing": (3, "Aggiornamento ramo"),
+    "branch-refreshed": (3, "Aggiornamento ramo"),
+    "semantic-conflict": (3, "Conflitto"),
+    "merge-wait": (4, "Merge"),
+    "integrating": (4, "Merge"),
+    "merge-race-or-failure": (4, "Merge"),
+    "merged": (5, "Completato"),
+}
+
+
+def _integrator_progress(pipeline: dict | None) -> tuple[int, str]:
+    pipeline = pipeline or {}
+    state = str(pipeline.get("integration_state") or "").strip()
+    pipeline_state = str(pipeline.get("pipeline_state") or "").strip()
+    if pipeline_state == "done":
+        return 5, "Completato"
+    if state in INTEGRATOR_PHASES:
+        return INTEGRATOR_PHASES[state]
+    if pipeline_state == "needs-fix":
+        return 1, "Da correggere"
+    if pipeline_state == "integration":
+        return 1, "In coda"
+    return 0, "Non avviato"
+
+
+def _integrator_bar(step: int, *, width: int = 10) -> str:
+    total = 5
+    bounded = max(0, min(total, int(step)))
+    filled = round(width * bounded / total)
+    percent = bounded * 20
+    return f"{'█' * filled}{'░' * (width - filled)} {percent}%"
+
+
+def _integrator_progress_line(pipeline: dict | None) -> str:
+    pipeline = pipeline or {}
+    step, label = _integrator_progress(pipeline)
+    parts = [f"{_integrator_bar(step)} · {_text(label)}"]
+    reason = _human_text(pipeline.get("integration_reason"), limit=120)
+    if reason and reason not in {label, str(pipeline.get("integration_state") or "")}:
+        parts.append(_text(reason))
+    if pipeline.get("queue_position") and pipeline.get("queue_size"):
+        parts.append(
+            "coda "
+            f"{_text(pipeline['queue_position'])}/{_text(pipeline['queue_size'])}"
+        )
+    return "<b>Integrator</b>: " + " · ".join(parts)
+
+
+def _integration_dashboard_note(pipeline_status: dict[str, dict]) -> str:
+    active: list[tuple[str, dict]] = []
+    blocked = 0
+    for prompt_id, pipeline in pipeline_status.items():
+        pipeline_state = str((pipeline or {}).get("pipeline_state") or "")
+        if pipeline_state not in {"integration", "needs-fix"}:
+            continue
+        active.append((prompt_id, pipeline))
+        if pipeline_state == "needs-fix":
+            blocked += 1
+
+    if not active:
+        return "Integrator: nessuna integrazione attiva."
+
+    active.sort(
+        key=lambda item: (
+            int(item[1].get("queue_position") or 2_147_483_647),
+            item[0],
+        )
+    )
+    in_progress = len(active) - blocked
+    summary = (
+        f"<b>Integrator</b>: {len(active)} task · "
+        f"{in_progress} in corso · {blocked} da correggere"
+    )
+    lines = [summary]
+    for prompt_id, pipeline in active:
+        step, label = _integrator_progress(pipeline)
+        bits = [
+            f"{_text(prompt_id)} · {_integrator_bar(step)} · {_text(label)}"
+        ]
+        if pipeline.get("pr_number"):
+            bits.append(f"PR #{_text(pipeline['pr_number'])}")
+        if pipeline.get("queue_position") and pipeline.get("queue_size"):
+            bits.append(
+                "coda "
+                f"{_text(pipeline['queue_position'])}/{_text(pipeline['queue_size'])}"
+            )
+        reason = _human_text(pipeline.get("integration_reason"), limit=100)
+        if reason:
+            bits.append(_text(reason))
+        lines.append("• " + " · ".join(bits))
+    return "\n".join(lines)
+
 
 def prompt_name(prompt: RoadmapPrompt, group: str | None = None) -> str:
     marker = DASHBOARD_MARKERS.get(group or "", "")
@@ -758,6 +855,8 @@ def prompt_note(
             )
         if pipeline_bits:
             lines.append("<b>Pipeline</b>: " + " · ".join(pipeline_bits))
+        if str(pipeline.get("pipeline_state") or "") in {"integration", "needs-fix", "done"}:
+            lines.append(_integrator_progress_line(pipeline))
 
         pipeline_state = str(pipeline.get("pipeline_state") or "")
         if prompt.status == "completed" and pipeline_state not in {"", "done"}:
@@ -1237,6 +1336,11 @@ def sync_roadmap(
     group_ids: dict[str, str] = {}
     for key, label in DASHBOARD_GROUPS:
         desired_name = f"{label} ({group_counts[key]})"
+        desired_note = (
+            _integration_dashboard_note(pipeline_status)
+            if key == "integration"
+            else None
+        )
         mapped_group = _mapping_get(db, GROUP_PREFIX + key)
         if not mapped_group or mapped_group[0] not in existing_ids:
             group_candidates = [
@@ -1264,6 +1368,7 @@ def sync_roadmap(
             key=GROUP_PREFIX + key,
             parent_id=root_id,
             name=desired_name,
+            note=desired_note,
             layout_mode="h2",
         )
         group_ids[key] = group_id
@@ -1271,11 +1376,22 @@ def sync_roadmap(
         if current_group:
             group_data = current_group.get("data") if isinstance(current_group.get("data"), dict) else {}
             group_layout = str(group_data.get("layoutMode") or "bullets")
+            current_note = str(current_group.get("note") or "")
+            note_changed = (
+                key == "integration"
+                and current_note != str(desired_note or "")
+            )
             if (
                 str(current_group.get("name") or "") != desired_name
                 or group_layout != "h2"
+                or note_changed
             ):
-                client.update_node(group_id, desired_name, layout_mode="h2")
+                client.update_node(
+                    group_id,
+                    desired_name,
+                    note=desired_note if key == "integration" else None,
+                    layout_mode="h2",
+                )
             if str(current_group.get("parent_id") or "") != root_id:
                 client.move_node(group_id, root_id, position="bottom")
 
