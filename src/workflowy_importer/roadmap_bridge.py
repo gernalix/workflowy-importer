@@ -75,6 +75,7 @@ class RoadmapPrompt:
     dependents: list[str]
     relations_out: list[tuple[str, str]]
     relations_in: list[tuple[str, str]]
+    chat_guidance: str | None = None
     manual_prerequisites: list[str] = field(default_factory=list)
     last_outcome: str | None = None
     fix_packet: dict | None = None
@@ -130,10 +131,19 @@ def read_roadmap_db(raw: bytes) -> list[RoadmapPrompt]:
         conn = sqlite3.connect(f"file:{handle.name}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         try:
+            prompt_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(prompts)")
+            }
+            chat_guidance_expr = (
+                "chat_guidance"
+                if "chat_guidance" in prompt_columns
+                else "NULL AS chat_guidance"
+            )
             rows = list(
                 conn.execute(
-                    """SELECT prompt_id,title,status,project_name,repo,current_path,
-                              explanation,model,reasoning,queue_position
+                    f"""SELECT prompt_id,title,status,project_name,repo,current_path,
+                              explanation,model,reasoning,queue_position,{chat_guidance_expr}
                        FROM prompts
                        ORDER BY
                          CASE status
@@ -241,6 +251,11 @@ def read_roadmap_db(raw: bytes) -> list[RoadmapPrompt]:
             dependents=sorted(dependents.get(row["prompt_id"], [])),
             relations_out=sorted(rel_out.get(row["prompt_id"], [])),
             relations_in=sorted(rel_in.get(row["prompt_id"], [])),
+            chat_guidance=(
+                str(row["chat_guidance"]).strip()
+                if row["chat_guidance"] is not None
+                else None
+            ),
             manual_prerequisites=sorted(
                 manual_prerequisites.get(str(row["prompt_id"]), [])
             ),
@@ -617,6 +632,19 @@ def _talking_lines(
     return lines
 
 
+def _chat_guidance_line(prompt: RoadmapPrompt) -> str:
+    raw = " ".join(str(prompt.chat_guidance or "").split()).strip()
+    if not raw:
+        return "💬 <b>Chat Codex</b>: ⚠️ non specificato."
+
+    normalized = raw.casefold()
+    if "nuova chat" in normalized or normalized == "new chat":
+        return f"💬 <b>Chat Codex</b>: 🆕 Nuova chat · {_text(raw)}"
+    if "stessa chat" in normalized or "chat preesistente" in normalized:
+        return f"💬 <b>Chat Codex</b>: ↩️ Chat preesistente · {_text(raw)}"
+    return f"💬 <b>Chat Codex</b>: {_text(raw)}"
+
+
 def _mapped_link(prompt_id: str, node_ids: dict[str, str]) -> str:
     node_id = node_ids.get(prompt_id)
     if not node_id:
@@ -653,6 +681,7 @@ def prompt_note(
         )
     else:
         lines.append("💡 <b>In parole semplici</b>: spiegazione non ancora disponibile.")
+    lines.append(_chat_guidance_line(prompt))
 
     action_links = " · ".join(
         (
