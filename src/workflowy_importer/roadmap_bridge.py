@@ -298,12 +298,51 @@ def _external_repo_task(prompt: RoadmapPrompt) -> bool:
     return repo != "gernalix/codex-roadmap"
 
 
+def _failure_has_live_successor(
+    prompt: RoadmapPrompt,
+    prompt_by_id: dict[str, RoadmapPrompt],
+) -> bool:
+    """Return True when a failed/blocked prompt already has a forward path.
+
+    Historical failures and failures with an active/completed successor are not
+    actionable themselves. They belong in Archive; Needs fix is reserved for
+    unresolved leaf failures.
+    """
+    successor_relations = {"fix", "replacement", "followup", "merge"}
+    pending = [
+        target_id
+        for relation_type, target_id in prompt.relations_out
+        if relation_type in successor_relations
+    ]
+    seen: set[str] = set()
+    while pending:
+        target_id = pending.pop()
+        if target_id in seen:
+            continue
+        seen.add(target_id)
+        target = prompt_by_id.get(target_id)
+        if target is None:
+            continue
+        if target.status in {"pending", "running", "completed"}:
+            return True
+        pending.extend(
+            next_id
+            for relation_type, next_id in target.relations_out
+            if relation_type in successor_relations and next_id not in seen
+        )
+    return False
+
+
 def dashboard_group(
     prompt: RoadmapPrompt,
     prompt_by_id: dict[str, RoadmapPrompt],
     pipeline: dict | None,
 ) -> str:
     if prompt.status in {"blocked", "failed"}:
+        if not str(prompt.current_path or "").strip():
+            return "unknown"
+        if _failure_has_live_successor(prompt, prompt_by_id):
+            return "unknown"
         return "blocked"
     if prompt.status == "completed":
         pipeline_state = str((pipeline or {}).get("pipeline_state") or "")
