@@ -494,13 +494,35 @@ class RoadmapBridgeTests(unittest.TestCase):
             dashboard_group(prompt, {prompt.prompt_id: prompt}, pipeline=None),
         )
 
-    def test_historical_blocked_stub_is_archived(self):
+    def test_anonymous_historical_blocked_prompt_is_archived_even_with_materialization(self):
         prompt = RoadmapPrompt(
             prompt_id="123456",
             title="Historical",
             status="blocked",
             project_name=None,
             repo=None,
+            current_path="falliti/historical.md",
+            explanation="",
+            model=None,
+            reasoning=None,
+            queue_position=None,
+            dependencies=[],
+            dependents=[],
+            relations_out=[],
+            relations_in=[],
+        )
+        self.assertEqual(
+            "unknown",
+            dashboard_group(prompt, {prompt.prompt_id: prompt}, pipeline=None),
+        )
+
+    def test_blocked_prompt_without_materialization_is_archived(self):
+        prompt = RoadmapPrompt(
+            prompt_id="123456",
+            title="Historical",
+            status="blocked",
+            project_name="Example",
+            repo="gernalix/example",
             current_path="",
             explanation="",
             model=None,
