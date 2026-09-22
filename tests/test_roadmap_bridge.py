@@ -89,6 +89,70 @@ def roadmap_bytes(status: str = "pending") -> bytes:
         return Path(handle.name).read_bytes()
 
 
+def roadmap_order_bytes() -> bytes:
+    with tempfile.NamedTemporaryFile(suffix=".sqlite") as handle:
+        conn = sqlite3.connect(handle.name)
+        conn.executescript(
+            """
+            CREATE TABLE prompts(
+              prompt_id TEXT PRIMARY KEY,
+              title TEXT NOT NULL,
+              status TEXT NOT NULL,
+              project_name TEXT,
+              repo TEXT,
+              current_path TEXT NOT NULL,
+              explanation TEXT,
+              model TEXT,
+              reasoning TEXT,
+              queue_position INTEGER,
+              created_at TEXT NOT NULL
+            );
+            CREATE TABLE dependencies(
+              prompt_id TEXT NOT NULL,
+              depends_on_prompt_id TEXT NOT NULL
+            );
+            CREATE TABLE prompt_relations(
+              from_prompt_id TEXT NOT NULL,
+              to_prompt_id TEXT NOT NULL,
+              relation_type TEXT NOT NULL
+            );
+            CREATE TABLE prompt_tags(
+              prompt_id TEXT NOT NULL,
+              tag TEXT NOT NULL
+            );
+            """
+        )
+        rows = [
+            ("111111", "Ready first", "pending", 1),
+            ("222222", "Waiting dependency", "pending", 2),
+            ("333333", "Ready second", "pending", 3),
+            ("444444", "Waiting manual", "pending", 4),
+            ("999999", "Running prerequisite", "running", 5),
+        ]
+        for prompt_id, title, status, queue_position in rows:
+            conn.execute(
+                """INSERT INTO prompts VALUES(
+                   ?,?,?, 'Example','gernalix/example',
+                   ?,?,'GPT-5.6 Luna','low',?,'2026-09-19T00:00:00Z'
+                )""",
+                (
+                    prompt_id,
+                    title,
+                    status,
+                    f"prompts/{prompt_id}.md",
+                    title,
+                    queue_position,
+                ),
+            )
+        conn.execute("INSERT INTO dependencies VALUES('222222','999999')")
+        conn.execute(
+            "INSERT INTO prompt_tags VALUES('444444','manual-prerequisite:revoke-pat')"
+        )
+        conn.commit()
+        conn.close()
+        return Path(handle.name).read_bytes()
+
+
 class FakeClient:
     def __init__(self) -> None:
         self.nodes: list[dict] = []
@@ -145,12 +209,26 @@ class FakeClient:
         parent_id: str,
         position: str = "top",
     ) -> None:
-        del position
-        for node in self.nodes:
-            if node["id"] == node_id:
-                node["parent_id"] = parent_id
-                return
-        raise AssertionError(f"missing node {node_id}")
+        index = next(
+            (i for i, node in enumerate(self.nodes) if node["id"] == node_id),
+            None,
+        )
+        if index is None:
+            raise AssertionError(f"missing node {node_id}")
+        node = self.nodes.pop(index)
+        node["parent_id"] = parent_id
+        sibling_indexes = [
+            i
+            for i, sibling in enumerate(self.nodes)
+            if sibling.get("parent_id") == parent_id
+        ]
+        if position == "top":
+            insert_at = sibling_indexes[0] if sibling_indexes else len(self.nodes)
+        elif position == "bottom":
+            insert_at = sibling_indexes[-1] + 1 if sibling_indexes else len(self.nodes)
+        else:
+            raise AssertionError(f"unsupported position {position}")
+        self.nodes.insert(insert_at, node)
 
 
     def get_node(self, node_id: str) -> dict:
@@ -219,6 +297,75 @@ class RoadmapBridgeTests(unittest.TestCase):
         self.assertEqual(["654321"], prompts[0].dependents)
         self.assertEqual([("followup", "654321")], prompts[0].relations_out)
         self.assertEqual([("followup", "123456")], prompts[1].relations_in)
+
+    def test_ready_and_waiting_follow_canonical_queue_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(Path(tmp) / "cache.sqlite")
+            client = FakeClient()
+            raw = roadmap_order_bytes()
+            sync_roadmap(
+                client,
+                db,
+                raw_roadmap_db=raw,
+                submitter=lambda doc, key: {"status": "ok"},
+            )
+
+            ready = next(
+                node for node in client.nodes
+                if str(node["name"]).startswith("Ready (")
+            )
+            waiting = next(
+                node for node in client.nodes
+                if str(node["name"]).startswith("Waiting (")
+            )
+
+            # Simulate a user/API order drift without changing canonical DB order.
+            ready_children = [
+                node
+                for node in client.nodes
+                if node.get("parent_id") == ready["id"]
+                and str(node.get("name") or "").startswith("[")
+            ]
+            first_index = client.nodes.index(ready_children[0])
+            second_index = client.nodes.index(ready_children[1])
+            client.nodes[first_index], client.nodes[second_index] = (
+                client.nodes[second_index],
+                client.nodes[first_index],
+            )
+
+            result = sync_roadmap(
+                client,
+                db,
+                raw_roadmap_db=raw,
+                submitter=lambda doc, key: {"status": "ok"},
+            )
+
+            ready_ids = [
+                str(node["name"])[1:7]
+                for node in client.nodes
+                if node.get("parent_id") == ready["id"]
+                and str(node.get("name") or "").startswith("[")
+            ]
+            waiting_ids = [
+                str(node["name"])[1:7]
+                for node in client.nodes
+                if node.get("parent_id") == waiting["id"]
+                and str(node.get("name") or "").startswith("[")
+            ]
+            self.assertEqual(["111111", "333333"], ready_ids)
+            self.assertEqual(["222222", "444444"], waiting_ids)
+            self.assertGreater(result["reordered"], 0)
+            db.close()
+
+    def test_manual_prerequisite_is_waiting_not_ready(self):
+        prompts = read_roadmap_db(roadmap_order_bytes())
+        prompt_by_id = {prompt.prompt_id: prompt for prompt in prompts}
+        prompt = prompt_by_id["444444"]
+        self.assertEqual(["revoke-pat"], prompt.manual_prerequisites)
+        self.assertEqual(
+            "waiting",
+            dashboard_group(prompt, prompt_by_id, pipeline=None),
+        )
 
     def test_running_last_blocked_outcome_is_needs_fix_before_canonical_finish(self):
         prompt = next(
