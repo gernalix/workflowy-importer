@@ -222,8 +222,8 @@ Use `--create-column` only when you intentionally want the program to add that c
 
 La dashboard combina roadmap + stato reale di `github-autosync` + binding di `chrome-codex-switcher`:
 
-- `Ready`: prompt pendenti con dipendenze soddisfatte;
-- `Waiting`: prompt pendenti ancora dipendenti da altri task;
+- `Ready`: prompt pendenti con dipendenze e prerequisiti manuali soddisfatti, sempre nell'ordine canonico `queue_position` di `roadmap.sqlite`;
+- `Waiting`: prompt pendenti ancora dipendenti da altri task o da prerequisiti manuali, mantenendo lo stesso ordine canonico;
 - `Running`: Codex ha realmente acquisito il prompt;
 - `Integration`: worker finito, PR/CI/rebase/merge gestiti asincronamente;
 - `Needs fix`: BLOCKED/FAIL o hard blocker dell'integratore;
