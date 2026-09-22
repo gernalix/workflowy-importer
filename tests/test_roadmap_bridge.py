@@ -942,7 +942,7 @@ class RoadmapBridgeTests(unittest.TestCase):
             self.assertNotIn("Codex URL:", prompt_node["note"])
             db.close()
 
-    def test_blocked_prompt_talks_in_plain_language_from_fix_packet(self):
+    def test_archived_blocked_prompt_preserves_plain_language_fix_packet(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = connect(Path(tmp) / "cache.sqlite")
             client = FakeClient()
@@ -974,9 +974,9 @@ class RoadmapBridgeTests(unittest.TestCase):
                 node for node in client.nodes
                 if str(node["name"]).startswith("[123456]")
             )
-            self.assertIn("🔴", prompt_node["name"])
+            self.assertIn("⚪", prompt_node["name"])
             self.assertIn("<b>Parent</b>", prompt_node["name"])
-            self.assertEqual("h3", prompt_node["data"]["layoutMode"])
+            self.assertEqual("bullets", prompt_node["data"]["layoutMode"])
             self.assertIn(
                 "🔴 BLOCKED · Codex si è fermato prima del PASS.",
                 prompt_node["note"],
