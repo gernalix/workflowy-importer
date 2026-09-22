@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +15,8 @@ from workflowy_importer.cache import connect
 from workflowy_importer.fix_packets import load_fix_packet, load_latest_terminal_outcome
 from workflowy_importer.roadmap_bridge import (
     RoadmapPrompt,
+    _notify_ready_entries,
+    _send_ready_telegram,
     command_from_children,
     dashboard_group,
     mutation_for_command,
@@ -357,6 +360,97 @@ class RoadmapBridgeTests(unittest.TestCase):
             self.assertEqual(["222222", "444444"], waiting_ids)
             self.assertGreater(result["reordered"], 0)
             db.close()
+
+    def test_ready_notifications_fire_once_per_entry_and_retry_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(Path(tmp) / "cache.sqlite")
+            prompts = read_roadmap_db(roadmap_order_bytes())
+            prompt_by_id = {prompt.prompt_id: prompt for prompt in prompts}
+            groups = {
+                prompt.prompt_id: dashboard_group(prompt, prompt_by_id, pipeline=None)
+                for prompt in prompts
+            }
+            delivered: list[str] = []
+
+            # First sync establishes a quiet baseline for already-Ready tasks.
+            self.assertEqual(
+                (0, 0),
+                _notify_ready_entries(
+                    db,
+                    prompts,
+                    groups,
+                    lambda prompt: delivered.append(prompt.prompt_id) or True,
+                ),
+            )
+            self.assertEqual([], delivered)
+
+            # A task entering Ready is notified once.
+            groups["444444"] = "ready"
+            self.assertEqual(
+                (1, 0),
+                _notify_ready_entries(
+                    db,
+                    prompts,
+                    groups,
+                    lambda prompt: delivered.append(prompt.prompt_id) or True,
+                ),
+            )
+            self.assertEqual(["444444"], delivered)
+            self.assertEqual(
+                (0, 0),
+                _notify_ready_entries(
+                    db,
+                    prompts,
+                    groups,
+                    lambda prompt: delivered.append(prompt.prompt_id) or True,
+                ),
+            )
+            self.assertEqual(["444444"], delivered)
+
+            # Leaving and re-entering Ready is a new transition. A failed
+            # delivery is not acknowledged and is retried on the next sync.
+            groups["444444"] = "waiting"
+            self.assertEqual(
+                (0, 0),
+                _notify_ready_entries(db, prompts, groups, lambda prompt: True),
+            )
+            groups["444444"] = "ready"
+            self.assertEqual(
+                (0, 1),
+                _notify_ready_entries(db, prompts, groups, lambda prompt: False),
+            )
+            self.assertEqual(
+                (1, 0),
+                _notify_ready_entries(
+                    db,
+                    prompts,
+                    groups,
+                    lambda prompt: delivered.append(prompt.prompt_id) or True,
+                ),
+            )
+            self.assertEqual(["444444", "444444"], delivered)
+            db.close()
+
+    @patch("workflowy_importer.roadmap_bridge.subprocess.run")
+    def test_ready_telegram_uses_shared_notifier_and_project_id(self, mocked_run):
+        mocked_run.return_value = MagicMock(returncode=0)
+        prompt = read_roadmap_db(roadmap_bytes())[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            credentials = Path(tmp) / "telegram.env"
+            credentials.write_text("placeholder=not-read-by-test\n", encoding="utf-8")
+            with patch(
+                "workflowy_importer.roadmap_bridge._telegram_credentials_path",
+                return_value=credentials,
+            ):
+                self.assertTrue(_send_ready_telegram(prompt))
+
+        command = mocked_run.call_args.args[0]
+        env = mocked_run.call_args.kwargs["env"]
+        self.assertEqual([sys.executable, "-m", "telegram_notify"], command[:3])
+        self.assertIn("123456", command[3])
+        self.assertIn("Parent", command[4])
+        self.assertEqual("96", env["TELEGRAM_PROJECT_ID"])
+        self.assertEqual(str(credentials), env["TELEGRAM_NOTIFY_CONFIG"])
 
     def test_manual_prerequisite_is_waiting_not_ready(self):
         prompts = read_roadmap_db(roadmap_order_bytes())
