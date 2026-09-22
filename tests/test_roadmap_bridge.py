@@ -726,6 +726,7 @@ class RoadmapBridgeTests(unittest.TestCase):
             dependents=[],
             relations_out=[],
             relations_in=[],
+            chat_guidance="Stessa chat di 357862",
         )
         name = prompt_name(prompt, "ready")
         note = prompt_note(
@@ -740,9 +741,30 @@ class RoadmapBridgeTests(unittest.TestCase):
             "💡 <b>In parole semplici</b>: Controlla che l'aggiornamento funzioni davvero sull'installazione reale.",
             note,
         )
+        self.assertIn(
+            "💬 <b>Chat Codex</b>: ↩️ Chat preesistente · Stessa chat di 357862",
+            note,
+        )
         self.assertLess(
             note.index("<b>In parole semplici</b>"),
+            note.index("<b>Chat Codex</b>"),
+        )
+        self.assertLess(
+            note.index("<b>Chat Codex</b>"),
             note.index("<b>Azioni</b>"),
+        )
+
+        prompt.chat_guidance = "Nuova chat Codex; continua da zero"
+        new_chat_note = prompt_note(
+            prompt,
+            {"123456": "node-1"},
+            repository="gernalix/codex-roadmap",
+            branch="main",
+            group="ready",
+        )
+        self.assertIn(
+            "💬 <b>Chat Codex</b>: 🆕 Nuova chat · Nuova chat Codex; continua da zero",
+            new_chat_note,
         )
         self.assertNotIn("&#x27;", name)
         self.assertNotIn("&#x27;", note)
