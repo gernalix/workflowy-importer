@@ -380,6 +380,103 @@ class RoadmapBridgeTests(unittest.TestCase):
             dashboard_group(prompt, {prompt.prompt_id: prompt}, pipeline=None),
         )
 
+    def test_blocked_prompt_with_active_followup_is_archived(self):
+        prompts = read_roadmap_db(roadmap_bytes("blocked"))
+        prompt_by_id = {prompt.prompt_id: prompt for prompt in prompts}
+        self.assertEqual(
+            "unknown",
+            dashboard_group(prompt_by_id["123456"], prompt_by_id, pipeline=None),
+        )
+
+    def test_blocked_leaf_remains_needs_fix(self):
+        prompt = next(
+            prompt
+            for prompt in read_roadmap_db(roadmap_bytes("blocked"))
+            if prompt.prompt_id == "123456"
+        )
+        prompt.relations_out = []
+        self.assertEqual(
+            "blocked",
+            dashboard_group(prompt, {prompt.prompt_id: prompt}, pipeline=None),
+        )
+
+    def test_historical_blocked_stub_is_archived(self):
+        prompt = RoadmapPrompt(
+            prompt_id="123456",
+            title="Historical",
+            status="blocked",
+            project_name=None,
+            repo=None,
+            current_path="",
+            explanation="",
+            model=None,
+            reasoning=None,
+            queue_position=None,
+            dependencies=[],
+            dependents=[],
+            relations_out=[],
+            relations_in=[],
+        )
+        self.assertEqual(
+            "unknown",
+            dashboard_group(prompt, {prompt.prompt_id: prompt}, pipeline=None),
+        )
+
+    def test_blocked_chain_with_running_descendant_is_archived(self):
+        source = RoadmapPrompt(
+            prompt_id="111111",
+            title="Source",
+            status="blocked",
+            project_name="Example",
+            repo="gernalix/example",
+            current_path="falliti/source.md",
+            explanation="",
+            model=None,
+            reasoning=None,
+            queue_position=None,
+            dependencies=[],
+            dependents=[],
+            relations_out=[("fix", "222222")],
+            relations_in=[],
+        )
+        middle = RoadmapPrompt(
+            prompt_id="222222",
+            title="Middle",
+            status="blocked",
+            project_name="Example",
+            repo="gernalix/example",
+            current_path="falliti/middle.md",
+            explanation="",
+            model=None,
+            reasoning=None,
+            queue_position=None,
+            dependencies=[],
+            dependents=[],
+            relations_out=[("followup", "333333")],
+            relations_in=[("fix", "111111")],
+        )
+        live = RoadmapPrompt(
+            prompt_id="333333",
+            title="Live",
+            status="running",
+            project_name="Example",
+            repo="gernalix/example",
+            current_path="prompts/live.md",
+            explanation="",
+            model=None,
+            reasoning=None,
+            queue_position=None,
+            dependencies=[],
+            dependents=[],
+            relations_out=[],
+            relations_in=[("followup", "222222")],
+        )
+        prompt_by_id = {item.prompt_id: item for item in (source, middle, live)}
+        self.assertEqual(
+            "unknown",
+            dashboard_group(source, prompt_by_id, pipeline=None),
+        )
+
     def test_latest_local_terminal_outcome_uses_newest_finished_cycle(self):
         with tempfile.TemporaryDirectory() as tmp:
             published = Path(tmp)
