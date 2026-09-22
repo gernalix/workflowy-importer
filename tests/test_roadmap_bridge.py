@@ -15,6 +15,8 @@ from workflowy_importer.cache import connect
 from workflowy_importer.fix_packets import load_fix_packet, load_latest_terminal_outcome
 from workflowy_importer.roadmap_bridge import (
     RoadmapPrompt,
+    _integration_dashboard_note,
+    _integrator_progress_line,
     _notify_ready_entries,
     _send_ready_telegram,
     command_from_children,
@@ -943,6 +945,51 @@ class RoadmapBridgeTests(unittest.TestCase):
             )
             db.close()
 
+    def test_integrator_progress_uses_real_pipeline_phases(self):
+        self.assertIn(
+            "████░░░░░░ 40% · Controlli CI",
+            _integrator_progress_line(
+                {
+                    "pipeline_state": "integration",
+                    "integration_state": "checks-pending",
+                    "queue_position": 2,
+                    "queue_size": 4,
+                }
+            ),
+        )
+        self.assertIn(
+            "██████████ 100% · Completato",
+            _integrator_progress_line(
+                {"pipeline_state": "done", "integration_state": "merged"}
+            ),
+        )
+        note = _integration_dashboard_note(
+            {
+                "123456": {
+                    "pipeline_state": "integration",
+                    "integration_state": "merge-wait",
+                    "pr_number": 27,
+                    "queue_position": 1,
+                    "queue_size": 2,
+                    "integration_reason": "mergeable-conflicting",
+                },
+                "654321": {
+                    "pipeline_state": "needs-fix",
+                    "integration_state": "checks-failed",
+                    "pr_number": 28,
+                },
+                "999999": {
+                    "pipeline_state": "done",
+                    "integration_state": "merged",
+                },
+            }
+        )
+        self.assertIn("<b>Integrator</b>: 2 task · 1 in corso · 1 da correggere", note)
+        self.assertIn("123456 · ████████░░ 80% · Merge · PR #27 · coda 1/2", note)
+        self.assertIn("mergeable-conflicting", note)
+        self.assertIn("654321 · ████░░░░░░ 40% · Controlli CI · PR #28", note)
+        self.assertNotIn("999999", note)
+
     def test_running_repo_task_moves_to_integration_group(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = connect(Path(tmp) / "cache.sqlite")
@@ -1004,6 +1051,18 @@ class RoadmapBridgeTests(unittest.TestCase):
                 '<b>Pipeline</b>: checks-pending · '
                 '<a href="https://github.com/gernalix/example/pull/27">PR</a> · coda 1/2',
                 prompt_node["note"],
+            )
+            self.assertIn(
+                "<b>Integrator</b>: ████░░░░░░ 40% · Controlli CI · coda 1/2",
+                prompt_node["note"],
+            )
+            self.assertIn(
+                "<b>Integrator</b>: 1 task · 1 in corso · 0 da correggere",
+                integration["note"],
+            )
+            self.assertIn(
+                "123456 · ████░░░░░░ 40% · Controlli CI · PR #27 · coda 1/2",
+                integration["note"],
             )
             self.assertNotIn("Chrome URL:", prompt_node["note"])
             self.assertNotIn("Codex URL:", prompt_node["note"])
