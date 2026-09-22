@@ -18,6 +18,7 @@ from workflowy_importer.roadmap_bridge import (
     dashboard_group,
     mutation_for_command,
     prompt_name,
+    prompt_note,
     read_roadmap_db,
     sync_roadmap,
 )
@@ -495,6 +496,43 @@ class RoadmapBridgeTests(unittest.TestCase):
             relations_in=[],
         )
         self.assertEqual("[123456] <b>No project</b>", prompt_name(prompt))
+
+    def test_plain_explanation_is_prominent_and_apostrophes_stay_readable(self):
+        prompt = RoadmapPrompt(
+            prompt_id="123456",
+            title="Distribuire l'hardening",
+            status="pending",
+            project_name="Example",
+            repo="gernalix/example",
+            current_path="prompts/example.md",
+            explanation="Controlla che l'aggiornamento funzioni davvero sull'installazione reale.",
+            model="GPT-5.6 Luna",
+            reasoning="low",
+            queue_position=1,
+            dependencies=[],
+            dependents=[],
+            relations_out=[],
+            relations_in=[],
+        )
+        name = prompt_name(prompt, "ready")
+        note = prompt_note(
+            prompt,
+            {"123456": "node-1"},
+            repository="gernalix/codex-roadmap",
+            branch="main",
+            group="ready",
+        )
+        self.assertEqual("[123456] 🟢 <b>Distribuire l'hardening</b>", name)
+        self.assertIn(
+            "💡 <b>In parole semplici</b>: Controlla che l'aggiornamento funzioni davvero sull'installazione reale.",
+            note,
+        )
+        self.assertLess(
+            note.index("<b>In parole semplici</b>"),
+            note.index("<b>Azioni</b>"),
+        )
+        self.assertNotIn("&#x27;", name)
+        self.assertNotIn("&#x27;", note)
 
     def test_terminal_command_can_follow_pending_atomically(self):
         prompt = read_roadmap_db(roadmap_bytes())[0]
