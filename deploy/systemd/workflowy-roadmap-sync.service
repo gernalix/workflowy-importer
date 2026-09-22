@@ -6,6 +6,7 @@ After=network-online.target
 Type=oneshot
 WorkingDirectory=%h/projects/workflowy-importer
 Environment=PYTHONPATH=%h/projects/workflowy-importer/src
+LoadCredential=telegram.env:%h/.config/codex/secrets/telegram.env
 ExecStart=/usr/bin/python3 -m workflowy_importer.bridge_cli roadmap-sync
 NoNewPrivileges=true
 PrivateTmp=true
