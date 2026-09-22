@@ -335,10 +335,15 @@ def _action_url(prompt_id: str, action: str) -> str:
     return f"http://127.0.0.1:43817/ui/prompt/{prompt_id}/{action}"
 
 
+def _text(value: object) -> str:
+    """Escape HTML markup in visible text without encoding quotes/apostrophes."""
+    return html.escape(str(value), quote=False)
+
+
 def _link(label: str, url: str) -> str:
     return (
         f'<a href="{html.escape(str(url), quote=True)}">'
-        f"{html.escape(label)}</a>"
+        f"{_text(label)}</a>"
     )
 
 
@@ -363,7 +368,7 @@ def prompt_name(prompt: RoadmapPrompt, group: str | None = None) -> str:
     marker_text = f"{marker} " if marker else ""
     return (
         f"[{prompt.prompt_id}] {marker_text}"
-        f"<b>{html.escape(prompt.title)}</b>"
+        f"<b>{_text(prompt.title)}</b>"
     )
 
 
@@ -423,9 +428,9 @@ def _talking_lines(
             blocker = _human_text(packet.get("blocker"))
             next_action = _human_text(packet.get("next_action"))
             if blocker:
-                lines.append(f"<b>Blocco</b>: {html.escape(blocker)}")
+                lines.append(f"<b>Blocco</b>: {_text(blocker)}")
             if next_action:
-                lines.append(f"<b>Prossimo passo</b>: {html.escape(next_action)}")
+                lines.append(f"<b>Prossimo passo</b>: {_text(next_action)}")
         else:
             lines.append("<b>Blocco</b>: causa non ancora disponibile.")
     elif group == "integration":
@@ -443,7 +448,7 @@ def _talking_lines(
             suffix += " · …"
         lines.append(
             "🟡 In attesa"
-            + (f" di {html.escape(suffix)}." if suffix else ".")
+            + (f" di {_text(suffix)}." if suffix else ".")
         )
     elif group == "ready":
         lines.append("🟢 Pronto all'avvio.")
@@ -458,7 +463,7 @@ def _talking_lines(
 def _mapped_link(prompt_id: str, node_ids: dict[str, str]) -> str:
     node_id = node_ids.get(prompt_id)
     if not node_id:
-        return html.escape(prompt_id)
+        return _text(prompt_id)
     return _link(prompt_id, workflowy_url(node_id))
 
 
@@ -483,6 +488,14 @@ def prompt_note(
         binding=binding,
         fix_packet=fix_packet,
     )
+
+    lines.append("")
+    if prompt.explanation:
+        lines.append(
+            f"💡 <b>In parole semplici</b>: {_text(prompt.explanation)}"
+        )
+    else:
+        lines.append("💡 <b>In parole semplici</b>: spiegazione non ancora disponibile.")
 
     action_links = " · ".join(
         (
@@ -518,14 +531,14 @@ def prompt_note(
     )
 
     details = [
-        f"ID {html.escape(prompt.prompt_id)}",
-        f"stato {html.escape(prompt.status)}",
+        f"ID {_text(prompt.prompt_id)}",
+        f"stato {_text(prompt.status)}",
     ]
     if prompt.project_name:
-        details.append(f"progetto {html.escape(prompt.project_name)}")
+        details.append(f"progetto {_text(prompt.project_name)}")
     if prompt.model or prompt.reasoning:
         model = " / ".join(
-            html.escape(str(x))
+            _text(x)
             for x in (prompt.model, prompt.reasoning)
             if x
         )
@@ -535,12 +548,9 @@ def prompt_note(
     outcome = str(prompt.last_outcome or "").upper()
     if prompt.status == "running" and outcome in {"BLOCKED", "FAIL"}:
         lines.append(
-            f"<b>Esito operativo</b>: {html.escape(outcome)} · "
+            f"<b>Esito operativo</b>: {_text(outcome)} · "
             "finalizzazione canonica in attesa"
         )
-    if prompt.explanation:
-        lines.append(f"<b>Obiettivo</b>: {html.escape(prompt.explanation)}")
-
     if prompt.current_path:
         source_url = (
             f"https://github.com/{repository}/blob/{branch}/{prompt.current_path}"
@@ -551,14 +561,14 @@ def prompt_note(
         pipeline_bits: list[str] = []
         state = pipeline.get("integration_state") or pipeline.get("pipeline_state")
         if state:
-            pipeline_bits.append(html.escape(str(state)))
+            pipeline_bits.append(_text(state))
         if pipeline.get("pr_url"):
             pipeline_bits.append(_link("PR", str(pipeline["pr_url"])))
         if pipeline.get("queue_position") and pipeline.get("queue_size"):
             pipeline_bits.append(
                 "coda "
-                f"{html.escape(str(pipeline['queue_position']))}/"
-                f"{html.escape(str(pipeline['queue_size']))}"
+                f"{_text(pipeline['queue_position'])}/"
+                f"{_text(pipeline['queue_size'])}"
             )
         if pipeline_bits:
             lines.append("<b>Pipeline</b>: " + " · ".join(pipeline_bits))
@@ -567,7 +577,7 @@ def prompt_note(
         if prompt.status == "completed" and pipeline_state not in {"", "done"}:
             lines.append(
                 "⚠ <b>State mismatch</b>: roadmap=completed · "
-                f"pipeline={html.escape(pipeline_state)}"
+                f"pipeline={_text(pipeline_state)}"
             )
         elif prompt.status == "running" and pipeline_state == "done":
             lines.append("Finalizzazione roadmap PASS in coda.")
@@ -586,7 +596,7 @@ def prompt_note(
         lines.append(
             "<b>Relazioni →</b>: "
             + " · ".join(
-                f"{html.escape(kind)}:{_mapped_link(pid, node_ids)}"
+                f"{_text(kind)}:{_mapped_link(pid, node_ids)}"
                 for kind, pid in prompt.relations_out
             )
         )
@@ -594,7 +604,7 @@ def prompt_note(
         lines.append(
             "<b>Relazioni ←</b>: "
             + " · ".join(
-                f"{html.escape(kind)}:{_mapped_link(pid, node_ids)}"
+                f"{_text(kind)}:{_mapped_link(pid, node_ids)}"
                 for kind, pid in prompt.relations_in
             )
         )
