@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 from urllib.request import urlopen
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -70,6 +70,7 @@ class RoadmapPrompt:
     dependents: list[str]
     relations_out: list[tuple[str, str]]
     relations_in: list[tuple[str, str]]
+    manual_prerequisites: list[str] = field(default_factory=list)
     last_outcome: str | None = None
     fix_packet: dict | None = None
 
@@ -153,6 +154,21 @@ def read_roadmap_db(raw: bytes) -> list[RoadmapPrompt]:
                 dependents.setdefault(row["depends_on_prompt_id"], []).append(
                     row["prompt_id"]
                 )
+            manual_prerequisites: dict[str, list[str]] = {}
+            try:
+                for row in conn.execute(
+                    """SELECT prompt_id,tag
+                       FROM prompt_tags
+                       WHERE tag LIKE 'manual-prerequisite:%'
+                       ORDER BY prompt_id,tag"""
+                ):
+                    tag = str(row["tag"])
+                    manual_prerequisites.setdefault(str(row["prompt_id"]), []).append(
+                        tag.split(":", 1)[1]
+                    )
+            except sqlite3.OperationalError:
+                pass
+
             rel_out: dict[str, list[tuple[str, str]]] = {}
             rel_in: dict[str, list[tuple[str, str]]] = {}
             for row in conn.execute(
@@ -220,6 +236,9 @@ def read_roadmap_db(raw: bytes) -> list[RoadmapPrompt]:
             dependents=sorted(dependents.get(row["prompt_id"], [])),
             relations_out=sorted(rel_out.get(row["prompt_id"], [])),
             relations_in=sorted(rel_in.get(row["prompt_id"], [])),
+            manual_prerequisites=sorted(
+                manual_prerequisites.get(str(row["prompt_id"]), [])
+            ),
             last_outcome=last_outcomes.get(str(row["prompt_id"])),
             fix_packet=fix_packets.get(str(row["prompt_id"])),
         )
@@ -298,7 +317,7 @@ def dashboard_group(
             dep for dep in prompt.dependencies
             if dep in prompt_by_id and prompt_by_id[dep].status != "completed"
         ]
-        return "waiting" if unresolved else "ready"
+        return "waiting" if unresolved or prompt.manual_prerequisites else "ready"
     if prompt.status == "running":
         outcome = str(prompt.last_outcome or "").upper()
         if outcome in {"BLOCKED", "FAIL"}:
@@ -414,9 +433,13 @@ def _talking_lines(
     elif group == "running":
         lines.append("🔵 In esecuzione.")
     elif group == "waiting":
-        unresolved = [str(dep) for dep in prompt.dependencies]
-        suffix = " · ".join(unresolved[:3])
-        if len(unresolved) > 3:
+        reasons = [str(dep) for dep in prompt.dependencies]
+        reasons.extend(
+            f"prerequisito: {value.replace('-', ' ')}"
+            for value in prompt.manual_prerequisites
+        )
+        suffix = " · ".join(reasons[:3])
+        if len(reasons) > 3:
             suffix += " · …"
         lines.append(
             "🟡 In attesa"
@@ -1233,6 +1256,24 @@ def sync_roadmap(
                     )
                     fix_packets_submitted += 1
 
+    desired_group_nodes: dict[str, list[str]] = {
+        key: [
+            node_ids[prompt.prompt_id]
+            for prompt in prompts
+            if prompt_groups[prompt.prompt_id] == key
+        ]
+        for key, _label in DASHBOARD_GROUPS
+    }
+    known_prompt_nodes = set(node_ids.values())
+    current_group_nodes: dict[str, list[str]] = {
+        key: [
+            str(node["id"])
+            for node in children_by_parent.get(group_ids[key], [])
+            if str(node.get("id") or "") in known_prompt_nodes
+        ]
+        for key, _label in DASHBOARD_GROUPS
+    }
+
     updated = 0
     moved = 0
     for prompt in prompts:
@@ -1281,12 +1322,25 @@ def sync_roadmap(
             )
             updated += 1
 
+    reordered = 0
+    for key, _label in DASHBOARD_GROUPS:
+        desired = desired_group_nodes[key]
+        if current_group_nodes[key] == desired:
+            continue
+        # Workflowy only exposes top/bottom sibling placement. Moving the
+        # canonical sequence in reverse to the top yields exactly the DB
+        # queue order while preserving the relative order of non-prompt nodes.
+        for node_id in reversed(desired):
+            client.move_node(node_id, group_ids[key], position="top")
+            reordered += 1
+
     db.commit()
     return {
         "prompts": len(prompts),
         "created": created,
         "updated": updated,
         "moved": moved,
+        "reordered": reordered,
         "duplicates_deleted": duplicates_deleted,
         "mutations_submitted": submitted,
         "fix_prompts_created": fix_prompts,
