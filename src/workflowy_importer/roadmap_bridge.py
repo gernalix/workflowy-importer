@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import html
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -50,6 +51,10 @@ STATUS_GROUP_KEY = {
 }
 DEFAULT_REPO_TASK = Path.home() / "projects" / "github-autosync" / "repo_single_writer.py"
 DEFAULT_CCS_URL = "http://127.0.0.1:43817"
+READY_STATE_SOURCE = "roadmap_ready_state"
+READY_STATE_KEY = "v1"
+WORKFLOWY_PROJECT_ID = 96
+DEFAULT_TELEGRAM_CONFIG = Path.home() / ".config" / "codex" / "secrets" / "telegram.env"
 LEGACY_GROUP_KEYS = ("pending", "failed", "cancelled", "superseded")
 PROMPT_NODE_RE = re.compile(r"^\[(\d{6})\]\s")
 
@@ -368,6 +373,119 @@ def dashboard_group(
             return "integration"
         return "running"
     return "unknown"
+
+
+def _load_ready_state(db: sqlite3.Connection) -> set[str] | None:
+    row = db.execute(
+        "SELECT payload_json FROM events WHERE source=? AND external_key=?",
+        (READY_STATE_SOURCE, READY_STATE_KEY),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        payload = json.loads(str(row["payload_json"] or "{}"))
+    except (json.JSONDecodeError, TypeError):
+        return None
+    values = payload.get("prompt_ids") if isinstance(payload, dict) else None
+    if not isinstance(values, list):
+        return None
+    return {str(value) for value in values if str(value).strip()}
+
+
+def _save_ready_state(db: sqlite3.Connection, prompt_ids: set[str]) -> None:
+    payload = json.dumps(
+        {"prompt_ids": sorted(prompt_ids)},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    db.execute(
+        """INSERT INTO events(source,external_key,payload_json)
+           VALUES(?,?,?)
+           ON CONFLICT(source,external_key)
+           DO UPDATE SET payload_json=excluded.payload_json""",
+        (READY_STATE_SOURCE, READY_STATE_KEY, payload),
+    )
+
+
+def _telegram_credentials_path() -> Path:
+    credentials_dir = str(os.environ.get("CREDENTIALS_DIRECTORY") or "").strip()
+    if credentials_dir:
+        systemd_credential = Path(credentials_dir) / "telegram.env"
+        if systemd_credential.is_file():
+            return systemd_credential
+    return DEFAULT_TELEGRAM_CONFIG
+
+
+def _send_ready_telegram(prompt: RoadmapPrompt) -> bool:
+    credentials = _telegram_credentials_path()
+    if not credentials.is_file():
+        return False
+
+    title = f"🟢 Workflowy Ready · {prompt.prompt_id}"
+    details = [prompt.title]
+    if prompt.project_name:
+        details.append(f"Progetto: {prompt.project_name}")
+    model_bits = [value for value in (prompt.model, prompt.reasoning) if value]
+    if model_bits:
+        details.append("Modello: " + " · ".join(model_bits))
+
+    env = os.environ.copy()
+    env["TELEGRAM_NOTIFY_CONFIG"] = str(credentials)
+    env["TELEGRAM_PROJECT_ID"] = str(WORKFLOWY_PROJECT_ID)
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "telegram_notify", title, "\n".join(details)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=False,
+            timeout=45,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
+def _notify_ready_entries(
+    db: sqlite3.Connection,
+    prompts: list[RoadmapPrompt],
+    prompt_groups: dict[str, str],
+    notifier: Callable[[RoadmapPrompt], bool],
+) -> tuple[int, int]:
+    current = {
+        prompt.prompt_id
+        for prompt in prompts
+        if prompt_groups.get(prompt.prompt_id) == "ready"
+    }
+    previous = _load_ready_state(db)
+
+    # Rollout is intentionally quiet: existing Ready tasks establish the
+    # baseline instead of producing a burst of historical notifications.
+    if previous is None:
+        _save_ready_state(db, current)
+        return 0, 0
+
+    entered = current - previous
+    sent = 0
+    failed: set[str] = set()
+    for prompt in prompts:
+        if prompt.prompt_id not in entered:
+            continue
+        try:
+            delivered = bool(notifier(prompt))
+        except Exception:
+            delivered = False
+        if delivered:
+            sent += 1
+        else:
+            failed.add(prompt.prompt_id)
+
+    # Failed deliveries remain outside the persisted Ready set so the next
+    # roadmap-sync retries them. Leaving Ready removes the id, so re-entry
+    # later is a new transition and generates another notification.
+    _save_ready_state(db, current - failed)
+    return sent, len(failed)
 
 
 def _action_url(prompt_id: str, action: str) -> str:
@@ -975,6 +1093,7 @@ def sync_roadmap(
     observed_outcome_loader: Callable[[str], str | None] | None = None,
     pipeline_status: dict[str, dict] | None = None,
     ccs_bindings: dict[str, dict] | None = None,
+    ready_notifier: Callable[[RoadmapPrompt], bool] | None = None,
 ) -> dict[str, int]:
     prompts = read_roadmap_db(
         raw_roadmap_db
@@ -1383,6 +1502,14 @@ def sync_roadmap(
             client.move_node(node_id, group_ids[key], position="top")
             reordered += 1
 
+    ready_notifications_sent, ready_notification_failures = _notify_ready_entries(
+        db,
+        prompts,
+        prompt_groups,
+        ready_notifier or _send_ready_telegram,
+    )
+    warnings += ready_notification_failures
+
     db.commit()
     return {
         "prompts": len(prompts),
@@ -1394,5 +1521,7 @@ def sync_roadmap(
         "mutations_submitted": submitted,
         "fix_prompts_created": fix_prompts,
         "fix_packets_submitted": fix_packets_submitted,
+        "ready_notifications_sent": ready_notifications_sent,
+        "ready_notification_failures": ready_notification_failures,
         "warnings": warnings,
     }
