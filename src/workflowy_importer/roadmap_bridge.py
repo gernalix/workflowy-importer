@@ -917,64 +917,8 @@ def mutation_for_command(
     *,
     pipeline_state: str | None = None,
 ) -> list[dict]:
-    status = prompt.status
-    if command == "running":
-        if status == "running":
-            return []
-        if status != "pending":
-            raise ValueError(
-                f"cannot_mark_running:{prompt.prompt_id}:{status}"
-            )
-        return [
-            {
-                "op": "status",
-                "prompt_id": prompt.prompt_id,
-                "status": "running",
-                "actor": "workflowy",
-                "note": "workflowy:explicit-running",
-            }
-        ]
-
-    if command == "PASS" and _external_repo_task(prompt) and pipeline_state != "done":
-        raise ValueError(f"pass_requires_integrated_repo:{prompt.prompt_id}")
-
-    targets = {
-        "PASS": "completed",
-        "BLOCKED": "blocked",
-        "FAIL": "failed",
-    }
-    try:
-        target = targets[command]
-    except KeyError as exc:
-        raise ValueError(f"unknown_roadmap_command:{command}") from exc
-    if status == target:
-        return []
-    if status not in {"pending", "running"}:
-        raise ValueError(
-            f"cannot_apply_{command.lower()}:{prompt.prompt_id}:{status}"
-        )
-
-    operations: list[dict] = []
-    if status == "pending":
-        operations.append(
-            {
-                "op": "status",
-                "prompt_id": prompt.prompt_id,
-                "status": "running",
-                "actor": "workflowy",
-                "note": "workflowy:implicit-running-before-terminal",
-            }
-        )
-    operations.append(
-        {
-            "op": "terminal_request",
-            "prompt_id": prompt.prompt_id,
-            "status": target,
-            "actor": "workflowy",
-            "note": f"workflowy:explicit-{command.lower()}",
-        }
-    )
-    return operations
+    _ = prompt, command, pipeline_state
+    raise ValueError("workflowy_lifecycle_commands_disabled")
 
 
 def _mapping_get(db: sqlite3.Connection, key: str) -> tuple[str, dict] | None:
