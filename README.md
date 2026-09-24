@@ -235,16 +235,7 @@ Quando un prompt **entra** in `Ready`, `roadmap-sync` invia una notifica Telegra
 
 Ogni prompt espone azioni operative nella nota: `🚀 Apri`, `📋 Copia`, `🌐 ChatGPT` quando esiste il binding Chrome, e il deep link `🧠 Codex` quando CCS lo conosce. `PROMPT_ID` è la chiave comune e non viene mai dedotto da URL o titoli.
 
-Sotto un prompt usa **un solo nodo figlio di stato**:
-
-```text
-R
-P
-B
-F
-```
-
-`R = running`, `P = PASS`, `B = BLOCKED`, `F = FAIL`. Sono override di emergenza, non il flusso ordinario. Per task repository-backed `P` è rifiutato finché `github-autosync` non conferma `pipeline_state=done`; normalmente il PASS viene applicato automaticamente dopo il merge. `B/F` aggiungono anche un marker `#needs_fix`. Se sono presenti due comandi contemporaneamente, il bridge non sceglie e non scrive nulla.
+Lo stato lifecycle mostrato sotto ogni prompt è **sola lettura**. Workflowy non interpreta più figli `R/P/B/F` e non può portare direttamente un task a `running`, `PASS`, `BLOCKED` o `FAIL`. L'avvio passa da `🚀 Avvia` → `roadmap_start.py`; la finalizzazione passa dall'unico `roadmap_finish.py`. La telemetria Codex e lo stato dell'integratore possono essere mostrati come evidenza separata, ma non sovrascrivono lo stato canonico della roadmap.
 
 Il timer opzionale `deploy/systemd/workflowy-roadmap-sync.timer` mantiene la dashboard sincronizzata con `roadmap.sqlite`, che resta l'unica source of truth.
 
