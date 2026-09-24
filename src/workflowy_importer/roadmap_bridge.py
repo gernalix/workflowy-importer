@@ -16,22 +16,15 @@ from pathlib import Path
 from typing import Callable
 
 from .api import WorkflowyAPIError, WorkflowyClient
-from .fix_packets import load_fix_packet, load_latest_terminal_outcome, packet_mutation
+from .fix_packets import load_fix_packet, packet_mutation
 from .links import workflowy_url
 
 ROADMAP_NAMESPACE = "codex-roadmap"
 ROADMAP_ROOT_KEY = "__root__"
 GROUP_PREFIX = "__group__:"
-COMMANDS = {
-    "R": "running",
-    "running": "running",
-    "P": "PASS",
-    "PASS": "PASS",
-    "B": "BLOCKED",
-    "BLOCKED": "BLOCKED",
-    "F": "FAIL",
-    "FAIL": "FAIL",
-}
+# Lifecycle state is read-only in Workflowy. Start/finish are owned by the
+# canonical roadmap entry points; short child commands are intentionally ignored.
+COMMANDS: dict[str, str] = {}
 DASHBOARD_GROUPS = (
     ("ready", "Ready"),
     ("waiting", "Waiting"),
@@ -378,9 +371,6 @@ def dashboard_group(
         ]
         return "waiting" if unresolved or prompt.manual_prerequisites else "ready"
     if prompt.status == "running":
-        outcome = str(prompt.last_outcome or "").upper()
-        if outcome in {"BLOCKED", "FAIL"}:
-            return "blocked"
         pipeline_state = str((pipeline or {}).get("pipeline_state") or "")
         if pipeline_state == "needs-fix":
             return "blocked"
@@ -672,10 +662,6 @@ def _talking_lines(
     lines: list[str] = []
     problem = (
         prompt.status in {"blocked", "failed"}
-        or (
-            prompt.status == "running"
-            and outcome in {"BLOCKED", "FAIL", "CANCELLED", "UNKNOWN"}
-        )
         or pipeline_state == "needs-fix"
     )
 
@@ -829,10 +815,10 @@ def prompt_note(
     lines.append("<b>Dettagli</b>: " + " · ".join(details))
 
     outcome = str(prompt.last_outcome or "").upper()
-    if prompt.status == "running" and outcome in {"BLOCKED", "FAIL"}:
+    if prompt.status == "running" and outcome in {"PASS", "BLOCKED", "FAIL", "CANCELLED", "UNKNOWN"}:
         lines.append(
-            f"<b>Esito operativo</b>: {_text(outcome)} · "
-            "finalizzazione canonica in attesa"
+            f"<b>Telemetria Codex</b>: {_text(outcome)} · "
+            "informativa, non modifica lo stato roadmap"
         )
     if prompt.current_path:
         source_url = (
@@ -895,7 +881,7 @@ def prompt_note(
         )
 
     lines.append(
-        "<b>Esito manuale</b>: R=running · P=PASS · B=BLOCKED · F=FAIL"
+        "<b>Lifecycle</b>: stato sola lettura; avvio e finalizzazione usano il percorso canonico."
     )
     tags = " ".join(
         tag
@@ -1229,13 +1215,9 @@ def sync_roadmap(
         else fetch_remote_roadmap_db(repository, branch)
     )
     prompt_by_id = {p.prompt_id: p for p in prompts}
-    outcome_loader = observed_outcome_loader or load_latest_terminal_outcome
-    for prompt in prompts:
-        if prompt.status != "running":
-            continue
-        observed_outcome = str(outcome_loader(prompt.prompt_id) or "").upper()
-        if observed_outcome in {"PASS", "BLOCKED", "FAIL", "CANCELLED", "UNKNOWN"}:
-            prompt.last_outcome = observed_outcome
+    # Compatibility argument only. Workflowy projects canonical roadmap state and
+    # the integration pipeline; it never overlays lifecycle state from codex-usage.
+    _ = observed_outcome_loader
 
     pipeline_status = pipeline_status if pipeline_status is not None else read_pipeline_status()
     ccs_bindings = ccs_bindings if ccs_bindings is not None else read_ccs_bindings()
