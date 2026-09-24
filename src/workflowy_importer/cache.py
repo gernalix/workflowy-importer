@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS events (
 
 
 def connect(path: Path | str) -> sqlite3.Connection:
-    db = sqlite3.connect(Path(path).expanduser())
+    db = sqlite3.connect(Path(path).expanduser(), timeout=30.0)
+    db.execute("PRAGMA busy_timeout=30000")
     db.row_factory = sqlite3.Row
     db.executescript(SCHEMA)
     try:

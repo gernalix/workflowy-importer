@@ -43,6 +43,12 @@ class CredentialTests(unittest.TestCase):
 
 
 class CacheTests(unittest.TestCase):
+    def test_connection_waits_for_transient_writer_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(Path(tmp) / "cache.sqlite")
+            self.assertEqual(db.execute("PRAGMA busy_timeout").fetchone()[0], 30000)
+            db.close()
+
     def test_refresh_search_and_duplicates(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = connect(Path(tmp) / "cache.sqlite")
