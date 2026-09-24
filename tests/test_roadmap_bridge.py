@@ -659,20 +659,10 @@ class RoadmapBridgeTests(unittest.TestCase):
                 load_latest_terminal_outcome("123456", published_root=published),
             )
 
-    def test_local_blocked_result_updates_dashboard_even_when_writer_is_rate_limited(self):
+    def test_local_telemetry_does_not_override_canonical_running(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = connect(Path(tmp) / "cache.sqlite")
             client = FakeClient()
-            packet = {
-                "schema": "codex-roadmap.fix-packet.v1",
-                "prompt_id": "123456",
-                "outcome": "BLOCKED",
-                "blocker": "GitHub API rate limit blocks roadmap finalization.",
-                "work_state": {},
-                "next_action": "Retry the canonical mutation after the rate limit clears.",
-                "report_ref": "codex-usage:cycle-rate-limit:hash-rate-limit",
-            }
-
             result = sync_roadmap(
                 client,
                 db,
@@ -680,57 +670,29 @@ class RoadmapBridgeTests(unittest.TestCase):
                 observed_outcome_loader=lambda prompt_id: (
                     "BLOCKED" if prompt_id == "123456" else None
                 ),
-                fix_packet_loader=lambda prompt_id, outcome: (
-                    packet
-                    if prompt_id == "123456" and outcome == "BLOCKED"
-                    else None
-                ),
                 submitter=lambda _doc, _key: (_ for _ in ()).throw(
-                    RuntimeError("github_rate_limit")
+                    RuntimeError("should_not_submit")
                 ),
             )
-
             prompt_node = next(
-                node
-                for node in client.nodes
+                node for node in client.nodes
                 if str(node["name"]).startswith("[123456]")
             )
-            needs_fix = next(
-                node for node in client.nodes if str(node["name"]).startswith("Needs fix (")
+            running = next(
+                node for node in client.nodes if str(node["name"]).startswith("Running (")
             )
-            group_names = {str(node["name"]) for node in client.nodes}
-            self.assertEqual(needs_fix["id"], prompt_node["parent_id"])
-            self.assertIn("Needs fix (1)", group_names)
-            self.assertIn("Running (0)", group_names)
+            self.assertEqual(running["id"], prompt_node["parent_id"])
             self.assertIn("<b>Dettagli</b>: ID 123456 · stato running", prompt_node["note"])
-            self.assertIn("<b>Esito operativo</b>: BLOCKED", prompt_node["note"])
-            self.assertIn("GitHub API rate limit", prompt_node["note"])
-            self.assertEqual(1, result["warnings"])
+            self.assertNotIn("<b>Esito operativo</b>", prompt_node["note"])
+            self.assertEqual(0, result["warnings"])
+            self.assertEqual(0, result["mutations_submitted"])
             db.close()
 
-    def test_command_is_strict_and_ambiguous_fails_closed(self):
-        aliases = {
-            "R": "running",
-            "P": "PASS",
-            "B": "BLOCKED",
-            "F": "FAIL",
-            "running": "running",
-            "PASS": "PASS",
-            "BLOCKED": "BLOCKED",
-            "FAIL": "FAIL",
-        }
-        for name, expected in aliases.items():
-            found = command_from_children([{"name": name, "id": "x"}])
-            self.assertEqual(expected, found[0])
-        self.assertIsNone(command_from_children([{"name": " P ", "id": "x"}]))
-        self.assertIsNone(command_from_children([{"name": "pass", "id": "x"}]))
-        with self.assertRaises(ValueError):
-            command_from_children(
-                [
-                    {"name": "running", "id": "a"},
-                    {"name": "PASS", "id": "b"},
-                ]
-            )
+
+    def test_manual_lifecycle_commands_are_disabled(self):
+        for name in ("R", "P", "B", "F", "running", "PASS", "BLOCKED", "FAIL"):
+            self.assertIsNone(command_from_children([{"name": name, "id": "x"}]))
+
 
     def test_prompt_without_project_keeps_required_project_tag(self):
         prompt = RoadmapPrompt(
@@ -810,22 +772,18 @@ class RoadmapBridgeTests(unittest.TestCase):
         self.assertNotIn("&#x27;", name)
         self.assertNotIn("&#x27;", note)
 
-    def test_terminal_command_can_follow_pending_atomically(self):
+    def test_direct_manual_lifecycle_mutation_is_rejected(self):
         prompt = read_roadmap_db(roadmap_bytes())[0]
-        ops = mutation_for_command(prompt, "PASS", pipeline_state="done")
-        self.assertEqual(["status", "terminal_request"], [op["op"] for op in ops])
-        self.assertEqual("completed", ops[-1]["status"])
-        blocked = mutation_for_command(prompt, "BLOCKED")
-        self.assertEqual("blocked", blocked[-1]["status"])
-        failed = mutation_for_command(prompt, "FAIL")
-        self.assertEqual("failed", failed[-1]["status"])
+        for command in ("running", "PASS", "BLOCKED", "FAIL"):
+            with self.assertRaisesRegex(ValueError, "workflowy_lifecycle_commands_disabled"):
+                mutation_for_command(prompt, command, pipeline_state="done")
 
-    def test_sync_creates_whole_projection_and_submits_running(self):
+
+    def test_sync_creates_projection_but_child_status_commands_are_inert(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = connect(Path(tmp) / "cache.sqlite")
             client = FakeClient()
             submitted: list[tuple[dict, str]] = []
-
             first = sync_roadmap(
                 client,
                 db,
@@ -839,25 +797,8 @@ class RoadmapBridgeTests(unittest.TestCase):
             )
             self.assertEqual("[123456] 🟢 <b>Parent</b>", prompt_node["name"])
             self.assertIn("🟢 Pronto all'avvio.", prompt_node["note"])
-            self.assertIn("🌐 Chrome ❌", prompt_node["note"])
-            self.assertIn("🧠 Codex ❌", prompt_node["note"])
-            self.assertIn("#status_pending", prompt_node["note"])
-            self.assertIn("<b>Sblocca</b>:", prompt_node["note"])
-            self.assertIn("<b>Relazioni →</b>:", prompt_node["note"])
-            group_names = {str(node["name"]) for node in client.nodes}
-            self.assertIn("Ready (1)", group_names)
-            self.assertIn("Waiting (1)", group_names)
-            self.assertIn("Running (0)", group_names)
-            self.assertIn("Integration (0)", group_names)
-            self.assertIn("Needs fix (0)", group_names)
-            self.assertIn("Done (0)", group_names)
-            self.assertIn("Archive (0)", group_names)
-            root = next(node for node in client.nodes if node["name"] == "Codex")
-            ready = next(node for node in client.nodes if node["name"] == "Ready (1)")
-            self.assertEqual("h1", root["data"]["layoutMode"])
-            self.assertEqual("h2", ready["data"]["layoutMode"])
-            self.assertEqual("bullets", prompt_node["data"]["layoutMode"])
-
+            self.assertIn("<b>Lifecycle</b>: stato sola lettura", prompt_node["note"])
+            self.assertNotIn("Esito manuale", prompt_node["note"])
             client.create_node(prompt_node["id"], "R")
             second = sync_roadmap(
                 client,
@@ -865,9 +806,8 @@ class RoadmapBridgeTests(unittest.TestCase):
                 raw_roadmap_db=roadmap_bytes(),
                 submitter=lambda doc, key: submitted.append((doc, key)) or {"status": "ok"},
             )
-            self.assertEqual(1, second["mutations_submitted"])
-            self.assertEqual("status", submitted[-1][0]["operations"][0]["op"])
-            self.assertEqual("running", submitted[-1][0]["operations"][0]["status"])
+            self.assertEqual(0, second["mutations_submitted"])
+            self.assertEqual([], submitted)
             db.close()
 
 
@@ -1280,14 +1220,13 @@ class RoadmapBridgeTests(unittest.TestCase):
             )
             db.close()
 
-    def test_repo_pass_override_requires_integrated_pipeline(self):
+    def test_repo_pass_override_is_not_available_in_workflowy(self):
         prompt = read_roadmap_db(roadmap_bytes("running"))[0]
-        with self.assertRaises(ValueError):
-            mutation_for_command(prompt, "PASS", pipeline_state="integration")
-        ops = mutation_for_command(prompt, "PASS", pipeline_state="done")
-        self.assertEqual("completed", ops[-1]["status"])
+        with self.assertRaisesRegex(ValueError, "workflowy_lifecycle_commands_disabled"):
+            mutation_for_command(prompt, "PASS", pipeline_state="done")
 
-    def test_short_blocked_creates_fix_marker(self):
+
+    def test_short_blocked_child_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = connect(Path(tmp) / "cache.sqlite")
             client = FakeClient()
@@ -1309,74 +1248,45 @@ class RoadmapBridgeTests(unittest.TestCase):
                 raw_roadmap_db=roadmap_bytes(),
                 submitter=lambda doc, key: submitted.append((doc, key)) or {"status": "ok"},
             )
-            self.assertEqual(1, result["mutations_submitted"])
-            self.assertEqual("blocked", submitted[-1][0]["operations"][-1]["status"])
-            self.assertTrue(
+            self.assertEqual(0, result["mutations_submitted"])
+            self.assertFalse(
                 any(
                     node["parent_id"] == prompt_node["id"]
-                    and node["name"] == "FIX B · 123456 #needs_fix"
+                    and str(node["name"]).startswith("FIX B")
                     for node in client.nodes
                 )
             )
             db.close()
 
-    def test_blocked_and_failed_reports_publish_one_sanitized_packet(self):
-        for command, outcome in (("B", "BLOCKED"), ("F", "FAIL")):
-            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as tmp:
-                published = Path(tmp) / "published"
-                metrics_path = published / "prompts/123456/cycles/report-1/metrics.json"
-                metrics_path.parent.mkdir(parents=True)
-                metrics_path.write_text(
-                    json.dumps(
-                        {
-                            "prompt_id": "123456",
-                            "status": outcome,
-                            "cycle_key": "report-1",
-                            "timestamp_end_utc": "2026-09-19T01:00:00Z",
-                            "final_response_redacted": (
-                                f"RESULT={outcome}\n"
-                                "Blocker: token=super-secret failed at /private/repo/file.py\n"
-                                "Branch: task/123456\nPR #42\ncommit abcdef1\n"
-                                "Next action: repair the parser fixture."
-                            ),
-                        }
-                    ),
-                    encoding="utf-8",
-                )
-                packet = load_fix_packet("123456", outcome, published_root=published)
-                self.assertEqual(outcome, packet["outcome"])
-                self.assertIn("<redacted>", packet["blocker"])
-                self.assertNotIn("/private/repo", packet["blocker"])
-                self.assertEqual("task/123456", packet["work_state"]["branch"])
-                self.assertEqual("#42", packet["work_state"]["pr"])
 
+    def test_manual_blocked_failed_children_do_not_publish_fix_packets(self):
+        for command in ("B", "F"):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
                 db = connect(Path(tmp) / "cache.sqlite")
                 client = FakeClient()
                 submitted: list[tuple[dict, str]] = []
-                submit = lambda doc, key: submitted.append((doc, key)) or {"status": "ok"}
-                sync_roadmap(client, db, raw_roadmap_db=roadmap_bytes(), submitter=submit)
-                prompt_node = next(node for node in client.nodes if str(node["name"]).startswith("[123456]"))
-                client.create_node(prompt_node["id"], command)
-                first = sync_roadmap(
+                sync_roadmap(
                     client,
                     db,
                     raw_roadmap_db=roadmap_bytes(),
-                    submitter=submit,
-                    fix_packet_loader=lambda _id, _outcome: packet,
+                    submitter=lambda doc, key: submitted.append((doc, key)) or {"status": "ok"},
                 )
-                self.assertEqual(1, first["fix_packets_submitted"])
-                self.assertEqual(2, len(submitted))
-                self.assertEqual("analysis", submitted[-1][0]["operations"][0]["op"])
-                second = sync_roadmap(
+                prompt_node = next(
+                    node for node in client.nodes
+                    if str(node["name"]).startswith("[123456]")
+                )
+                client.create_node(prompt_node["id"], command)
+                result = sync_roadmap(
                     client,
                     db,
-                    raw_roadmap_db=roadmap_bytes("blocked" if outcome == "BLOCKED" else "failed"),
-                    submitter=submit,
-                    fix_packet_loader=lambda _id, _outcome: packet,
+                    raw_roadmap_db=roadmap_bytes(),
+                    submitter=lambda doc, key: submitted.append((doc, key)) or {"status": "ok"},
                 )
-                self.assertEqual(0, second["fix_packets_submitted"])
-                self.assertEqual(2, len(submitted))
+                self.assertEqual(0, result["mutations_submitted"])
+                self.assertEqual(0, result["fix_packets_submitted"])
+                self.assertEqual([], submitted)
                 db.close()
+
 
 
 if __name__ == "__main__":
