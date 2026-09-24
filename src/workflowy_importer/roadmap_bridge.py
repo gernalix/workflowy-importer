@@ -68,6 +68,7 @@ class RoadmapPrompt:
     dependents: list[str]
     relations_out: list[tuple[str, str]]
     relations_in: list[tuple[str, str]]
+    prompt_type: str = "Prompt"
     chat_guidance: str | None = None
     manual_prerequisites: list[str] = field(default_factory=list)
     last_outcome: str | None = None
@@ -133,10 +134,15 @@ def read_roadmap_db(raw: bytes) -> list[RoadmapPrompt]:
                 if "chat_guidance" in prompt_columns
                 else "NULL AS chat_guidance"
             )
+            prompt_type_expr = (
+                "prompt_type"
+                if "prompt_type" in prompt_columns
+                else "'Prompt' AS prompt_type"
+            )
             rows = list(
                 conn.execute(
                     f"""SELECT prompt_id,title,status,project_name,repo,current_path,
-                              explanation,model,reasoning,queue_position,{chat_guidance_expr}
+                              explanation,model,reasoning,queue_position,{prompt_type_expr},{chat_guidance_expr}
                        FROM prompts
                        ORDER BY
                          CASE status
@@ -244,6 +250,7 @@ def read_roadmap_db(raw: bytes) -> list[RoadmapPrompt]:
             dependents=sorted(dependents.get(row["prompt_id"], [])),
             relations_out=sorted(rel_out.get(row["prompt_id"], [])),
             relations_in=sorted(rel_in.get(row["prompt_id"], [])),
+            prompt_type=str(row["prompt_type"] or "Prompt"),
             chat_guidance=(
                 str(row["chat_guidance"]).strip()
                 if row["chat_guidance"] is not None
@@ -765,6 +772,8 @@ def prompt_note(
     else:
         lines.append("💡 <b>In parole semplici</b>: spiegazione non ancora disponibile.")
     lines.append(_chat_guidance_line(prompt))
+    if str(prompt.prompt_type or "").strip().casefold() == "goal":
+        lines.append("⚡ <b>/goal</b> · esecuzione persistente")
 
     action_links = " · ".join(
         (
@@ -805,14 +814,14 @@ def prompt_note(
     ]
     if prompt.project_name:
         details.append(f"progetto {_text(prompt.project_name)}")
+    lines.append("<b>Dettagli</b>: " + " · ".join(details))
     if prompt.model or prompt.reasoning:
         model = " / ".join(
             _text(x)
             for x in (prompt.model, prompt.reasoning)
             if x
         )
-        details.append(f"modello {model}")
-    lines.append("<b>Dettagli</b>: " + " · ".join(details))
+        lines.append(f"🧠 <b><u>Modello</u></b>: <b><u>{model}</u></b>")
 
     outcome = str(prompt.last_outcome or "").upper()
     if prompt.status == "running" and outcome in {"PASS", "BLOCKED", "FAIL", "CANCELLED", "UNKNOWN"}:
