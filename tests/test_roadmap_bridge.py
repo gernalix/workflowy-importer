@@ -464,7 +464,7 @@ class RoadmapBridgeTests(unittest.TestCase):
             dashboard_group(prompt, prompt_by_id, pipeline=None),
         )
 
-    def test_running_last_blocked_outcome_is_needs_fix_before_canonical_finish(self):
+    def test_running_last_blocked_telemetry_does_not_override_canonical_state(self):
         prompt = next(
             prompt
             for prompt in read_roadmap_db(roadmap_bytes("running"))
@@ -472,7 +472,7 @@ class RoadmapBridgeTests(unittest.TestCase):
         )
         prompt.last_outcome = "BLOCKED"
         self.assertEqual(
-            "blocked",
+            "running",
             dashboard_group(prompt, {prompt.prompt_id: prompt}, pipeline=None),
         )
 
