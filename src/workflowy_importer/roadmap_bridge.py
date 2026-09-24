@@ -328,7 +328,7 @@ def _failure_has_live_successor(
     actionable themselves. They belong in Archive; Needs fix is reserved for
     unresolved leaf failures.
     """
-    successor_relations = {"fix", "replacement", "followup", "merge"}
+    successor_relations = {"fix", "replacement", "followup", "merge", "resolved_by"}
     pending = [
         target_id
         for relation_type, target_id in prompt.relations_out
