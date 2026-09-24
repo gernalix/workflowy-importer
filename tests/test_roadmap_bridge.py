@@ -729,6 +729,7 @@ class RoadmapBridgeTests(unittest.TestCase):
             dependents=[],
             relations_out=[],
             relations_in=[],
+            prompt_type="Goal",
             chat_guidance="Stessa chat di 357862",
         )
         name = prompt_name(prompt, "ready")
@@ -748,6 +749,12 @@ class RoadmapBridgeTests(unittest.TestCase):
             "💬 <b>Chat Codex</b>: ↩️ Chat preesistente · Stessa chat di 357862",
             note,
         )
+        self.assertIn("⚡ <b>/goal</b> · esecuzione persistente", note)
+        self.assertIn(
+            "🧠 <b><u>Modello</u></b>: <b><u>GPT-5.6 Luna / low</u></b>",
+            note,
+        )
+        self.assertNotIn("modello GPT-5.6 Luna / low", note)
         self.assertLess(
             note.index("<b>In parole semplici</b>"),
             note.index("<b>Chat Codex</b>"),
