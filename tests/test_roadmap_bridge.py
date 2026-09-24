@@ -484,6 +484,45 @@ class RoadmapBridgeTests(unittest.TestCase):
             dashboard_group(prompt_by_id["123456"], prompt_by_id, pipeline=None),
         )
 
+    def test_blocked_prompt_with_resolved_by_successor_is_archived(self):
+        source = RoadmapPrompt(
+            prompt_id="111111",
+            title="Source",
+            status="blocked",
+            project_name="Example",
+            repo="gernalix/example",
+            current_path="falliti/source.md",
+            explanation="",
+            model=None,
+            reasoning=None,
+            queue_position=None,
+            dependencies=[],
+            dependents=[],
+            relations_out=[("resolved_by", "222222")],
+            relations_in=[],
+        )
+        successor = RoadmapPrompt(
+            prompt_id="222222",
+            title="Successor",
+            status="completed",
+            project_name="Example",
+            repo="gernalix/example",
+            current_path="completed/successor.md",
+            explanation="",
+            model=None,
+            reasoning=None,
+            queue_position=None,
+            dependencies=[],
+            dependents=[],
+            relations_out=[],
+            relations_in=[("resolved_by", "111111")],
+        )
+        prompt_by_id = {item.prompt_id: item for item in (source, successor)}
+        self.assertEqual(
+            "unknown",
+            dashboard_group(source, prompt_by_id, pipeline=None),
+        )
+
     def test_blocked_leaf_remains_needs_fix(self):
         prompt = next(
             prompt
