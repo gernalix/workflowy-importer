@@ -42,6 +42,10 @@ class DeployRuntimeTests(unittest.TestCase):
                 calls,
             )
             self.assertIn(
+                ("systemctl", "--user", "enable", "--now", "workflowy-c2-daily-mirror.timer"),
+                calls,
+            )
+            self.assertIn(
                 ("systemctl", "--user", "restart", "workflowy-bridge.service"),
                 calls,
             )
