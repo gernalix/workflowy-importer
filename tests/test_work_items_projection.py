@@ -49,6 +49,21 @@ class ProjectionTests(unittest.TestCase):
         self.assertIn('In attesa di: Build', note)
         self.assertIn('https://workflowy.com/#/abc', note)
 
+    def test_legacy_action_groups_move_under_archive(self):
+        from workflowy_importer.roadmap_bridge import _mapping_set, GROUP_PREFIX, ROADMAP_ROOT_KEY
+        client = FakeClient()
+        root = client.create_node('inbox', 'Codex')
+        old = client.create_node(root, 'Integration')
+        client.create_node(old, 'User note')
+        with closing(connect(':memory:')) as db:
+            _mapping_set(db, ROADMAP_ROOT_KEY, root)
+            _mapping_set(db, GROUP_PREFIX+'integration', old)
+            sync_items(client, db, [item('one')], parent='inbox')
+            archived = next(n for n in client.nodes if n['id'] == old)
+            self.assertEqual('Legacy integration', archived['name'])
+            self.assertNotEqual(root, archived['parent_id'])
+            self.assertEqual(old, next(n for n in client.nodes if n['name']=='User note')['parent_id'])
+
     def test_canonical_reader_rejects_cycle_before_remote_write(self):
         with closing(sqlite3.connect(':memory:')) as conn:
             conn.executescript('''

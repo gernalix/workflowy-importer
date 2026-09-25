@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 import html
+import re
 import sqlite3
 
 GROUPS = (
@@ -22,6 +24,11 @@ def read_items(raw: bytes) -> list[dict] | None:
         if not marker or marker[0] != 'view':
             return None  # C2 is activated only by the canonical writer cutover.
         ready = {r[0] for r in conn.execute('SELECT work_item_id FROM v_work_item_runnable')}
+        configured = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_item_execution_specs'").fetchone()
+        if configured:
+            ready &= {r[0] for r in conn.execute('SELECT work_item_id FROM work_item_execution_specs')}
+        else:
+            ready.clear()
         items = [dict(r) for r in conn.execute('''SELECT * FROM v_work_item_summary
             ORDER BY COALESCE(sort_order,2147483647),created_at,work_item_id''')]
         by_id = {r['work_item_id']: r for r in items}
@@ -34,8 +41,12 @@ def read_items(raw: bytes) -> list[dict] | None:
                 JOIN work_items w ON w.work_item_id=d.depends_on_work_item_id
                 WHERE d.work_item_id=? AND d.required=1''', (key,))]
             status = item['status']
+            try:
+                recent = datetime.fromisoformat(str(item.get('updated_at')).replace('Z','+00:00')) >= datetime.now(timezone.utc)-timedelta(days=14)
+            except (TypeError, ValueError):
+                recent = False
             item['group'] = ('running' if status == 'running' else
-                'completed' if status in {'completed','waived'} else
+                ('completed' if recent else 'archive') if status in {'completed','waived'} else
                 'archive' if status in {'cancelled','superseded','unknown'} else
                 'blocked' if status in {'failed','blocked','needs_fix'} else
                 'ready' if key in ready else 'waiting')
@@ -67,8 +78,11 @@ def item_text(item: dict, links: dict[str, str]) -> tuple[str, str]:
         lines.append('In attesa di: ' + ', '.join(esc(d['title']) for d in waiting))
     elif item['executor_policy'] == 'human' and item['status'] not in DONE:
         lines.append('In attesa di un intervento umano.')
+    elif item['group'] == 'waiting' and not item['blocker']:
+        lines.append('In attesa di configurazione dell’esecuzione.')
+    project_tag = '#progetto-' + re.sub(r'[^a-z0-9]+', '-', str(item['project_name'] or '').lower()).strip('-')
     lines.append(' · '.join(esc(v) for v in (
-        item['project_name'], '#executor-' + item['executor_policy'], '#stato-' + item['status'],
+        item['project_name'], project_tag, '#executor-' + item['executor_policy'], '#stato-' + item['status'],
         *['#' + t for t in item['tags']]) if v))
     for dep in item['dependencies']:
         if dep['work_item_id'] in links:
@@ -96,9 +110,11 @@ def sync_items(client, db, items: list[dict], *, parent: str) -> dict:
             counts['created'] += 1
         else:
             node_id = str(node['id'])
-            if node.get('name') != name or str(node.get('note') or '') != note:
+            current_layout = (node.get('data') or {}).get('layoutMode')
+            if node.get('name') != name or str(node.get('note') or '') != note or current_layout != layout:
                 client.update_node(node_id, name, note=note, layout_mode=layout)
                 node.update(name=name, note=note)
+                node.setdefault('data', {})['layoutMode'] = layout
                 counts['updated'] += 1
             if node.get('parent_id') != parent_id:
                 client.move_node(node_id, parent_id, position='bottom')
@@ -125,6 +141,22 @@ def sync_items(client, db, items: list[dict], *, parent: str) -> dict:
     for item in items:
         name, note = item_text(item, links)
         put('wi:'+item['work_item_id'], nodes[links[item['work_item_id']]]['parent_id'], name, note)
+    # Retire the old top-level Integration/Unknown groups without deleting
+    # user-owned children; every canonical prompt node above has already moved.
+    for legacy in ('integration', 'unknown'):
+        mapped = _mapping_get(db, GROUP_PREFIX + legacy)
+        if not mapped or mapped[0] not in nodes or mapped[0] in groups.values():
+            continue
+        node = nodes[mapped[0]]
+        if node.get('parent_id') != groups['archive']:
+            client.move_node(mapped[0], groups['archive'], position='bottom')
+            node['parent_id'] = groups['archive']
+            counts['moved'] += 1
+        wanted = 'Legacy ' + legacy
+        if node.get('name') != wanted:
+            client.update_node(mapped[0], wanted)
+            node['name'] = wanted
+            counts['updated'] += 1
     # Apply order only if the remote sequence differs; retain manual nodes.
     desired = {root: list(groups.values())}
     for item in items:
