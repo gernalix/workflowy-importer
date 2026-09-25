@@ -90,6 +90,93 @@ def _validate_identifier(value: str) -> str:
     return value
 
 
+def _resolve_or_materialize_parent_id(
+    client: WorkflowyClient, parent: str
+) -> str:
+    try:
+        return client.resolve_target_id(parent)
+    except WorkflowyAPIError as exc:
+        if exc.status_code != 404:
+            raise
+
+    probe_id = client.create_node(
+        parent,
+        "[workflowy-bridge target materializer]",
+        position="bottom",
+    )
+    try:
+        probe = client.get_node(probe_id)
+        parent_id = probe.get("parent_id")
+        if not parent_id:
+            raise WorkflowyAPIError(
+                "Materialized target did not return a parent id"
+            )
+        return str(parent_id)
+    finally:
+        client.delete_node(probe_id)
+
+
+def _ensure_mirror(
+    client: WorkflowyClient,
+    db: sqlite3.Connection,
+    *,
+    node_id: str,
+    parent: str,
+) -> dict[str, object]:
+    parent_id = _resolve_or_materialize_parent_id(client, parent)
+    external_key = f"{node_id}:{parent_id}"
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        mapped = db.execute(
+            """SELECT node_id FROM mappings
+               WHERE namespace=? AND external_key=?""",
+            ("workflowy.ensure-mirror", external_key),
+        ).fetchone()
+        if mapped:
+            try:
+                existing = client.get_node(str(mapped["node_id"]))
+            except WorkflowyAPIError as exc:
+                if exc.status_code != 404:
+                    raise
+            else:
+                if str(existing.get("parent_id") or "") == parent_id:
+                    db.commit()
+                    return {
+                        "created": False,
+                        "mirror_id": str(mapped["node_id"]),
+                        "parent_id": parent_id,
+                    }
+
+        mirror_id, origin_id = client.mirror_node(node_id, parent_id)
+        db.execute(
+            """INSERT INTO mappings(
+                 namespace,external_key,node_id,metadata_json
+               ) VALUES(?,?,?,?)
+               ON CONFLICT(namespace,external_key) DO UPDATE SET
+                 node_id=excluded.node_id,
+                 metadata_json=excluded.metadata_json""",
+            (
+                "workflowy.ensure-mirror",
+                external_key,
+                mirror_id,
+                json.dumps(
+                    {"origin_id": origin_id, "parent_id": parent_id},
+                    sort_keys=True,
+                ),
+            ),
+        )
+        db.commit()
+        return {
+            "created": True,
+            "mirror_id": mirror_id,
+            "origin_id": origin_id,
+            "parent_id": parent_id,
+        }
+    except Exception:
+        db.rollback()
+        raise
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="wf", description="Workflowy local automation bridge"
@@ -131,6 +218,12 @@ def build_parser() -> argparse.ArgumentParser:
     mirror = sub.add_parser("mirror")
     mirror.add_argument("node_id")
     mirror.add_argument("parent")
+    ensure_mirror = sub.add_parser(
+        "ensure-mirror",
+        help="Ensure exactly one locally tracked mirror under a parent",
+    )
+    ensure_mirror.add_argument("node_id")
+    ensure_mirror.add_argument("parent")
     unmirror = sub.add_parser("unmirror")
     unmirror.add_argument("node_id")
     done = sub.add_parser("done")
