@@ -487,6 +487,18 @@ def run(args: argparse.Namespace) -> int:
                 print(
                     f"mirror_id={mirror_id} origin_id={origin_id}"
                 )
+            elif args.command == "ensure-mirror":
+                print(
+                    json.dumps(
+                        _ensure_mirror(
+                            client,
+                            db,
+                            node_id=args.node_id,
+                            parent=args.parent,
+                        ),
+                        sort_keys=True,
+                    )
+                )
             elif args.command == "unmirror":
                 client.delete_mirror(args.node_id)
                 print("ok")
