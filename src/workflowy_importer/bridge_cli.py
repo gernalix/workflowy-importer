@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import configparser
+from datetime import date
 import json
 import re
 import sqlite3
@@ -177,6 +178,78 @@ def _ensure_mirror(
         raise
 
 
+def _daily_node_date(node: dict) -> date | None:
+    match = re.search(
+        r'<time\s+startYear="(\d{4})"\s+startMonth="(\d{1,2})"\s+startDay="(\d{1,2})">',
+        str(node.get("name") or ""),
+    )
+    if not match:
+        return None
+    try:
+        return date(*(int(value) for value in match.groups()))
+    except ValueError:
+        return None
+
+
+def _ensure_daily_mirrors(
+    client: WorkflowyClient,
+    db: sqlite3.Connection,
+    *,
+    node_id: str,
+    since: date,
+) -> dict[str, object]:
+    today = date.today()
+    exported = client.export_nodes()
+    refresh_cache(db, exported, keep_snapshot=False)
+
+    daily_nodes: list[tuple[date, str]] = []
+    for node in exported:
+        node_date = _daily_node_date(node)
+        if node_date is None or node_date < since or node_date > today:
+            continue
+        daily_nodes.append((node_date, str(node["id"])))
+
+    daily_nodes.sort()
+    results = []
+    seen_parent_ids: set[str] = set()
+    for node_date, parent_id in daily_nodes:
+        if parent_id in seen_parent_ids:
+            continue
+        seen_parent_ids.add(parent_id)
+        results.append(
+            {
+                "date": node_date.isoformat(),
+                **_ensure_mirror(
+                    client,
+                    db,
+                    node_id=node_id,
+                    parent=parent_id,
+                ),
+            }
+        )
+
+    if not any(node_date == today for node_date, _ in daily_nodes):
+        results.append(
+            {
+                "date": today.isoformat(),
+                **_ensure_mirror(
+                    client,
+                    db,
+                    node_id=node_id,
+                    parent="today",
+                ),
+            }
+        )
+
+    return {
+        "since": since.isoformat(),
+        "through": today.isoformat(),
+        "daily_notes": len(results),
+        "created": sum(bool(row["created"]) for row in results),
+        "results": results,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="wf", description="Workflowy local automation bridge"
@@ -224,6 +297,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ensure_mirror.add_argument("node_id")
     ensure_mirror.add_argument("parent")
+    daily_mirror = sub.add_parser(
+        "ensure-daily-mirror",
+        help="Backfill and maintain a mirror in Workflowy daily notes",
+    )
+    daily_mirror.add_argument("node_id")
+    daily_mirror.add_argument("--since", required=True, type=date.fromisoformat)
     unmirror = sub.add_parser("unmirror")
     unmirror.add_argument("node_id")
     done = sub.add_parser("done")
@@ -495,6 +574,18 @@ def run(args: argparse.Namespace) -> int:
                             db,
                             node_id=args.node_id,
                             parent=args.parent,
+                        ),
+                        sort_keys=True,
+                    )
+                )
+            elif args.command == "ensure-daily-mirror":
+                print(
+                    json.dumps(
+                        _ensure_daily_mirrors(
+                            client,
+                            db,
+                            node_id=args.node_id,
+                            since=args.since,
                         ),
                         sort_keys=True,
                     )
