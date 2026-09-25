@@ -4,6 +4,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 from workflowy_importer.automation import classify
@@ -12,7 +13,7 @@ from workflowy_importer.chatgpt import conversation_to_markdown
 from workflowy_importer.credentials import CredentialError, load_api_key
 from workflowy_importer.links import workflowy_url
 from workflowy_importer.bridge import _roadmap_prompt_metadata
-from workflowy_importer.bridge_cli import _ensure_mirror
+from workflowy_importer.bridge_cli import _ensure_daily_mirrors, _ensure_mirror
 
 
 class CredentialTests(unittest.TestCase):

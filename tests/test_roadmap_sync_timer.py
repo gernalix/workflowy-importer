@@ -22,7 +22,7 @@ class RoadmapSyncTimerTests(unittest.TestCase):
         self.assertIn("OnCalendar=*-*-* 00:05:00", timer)
         self.assertIn("Persistent=true", timer)
         self.assertIn(
-            "ensure-mirror b8d749c7-7e22-4024-bf11-98c00c618b80 today",
+            "ensure-daily-mirror b8d749c7-7e22-4024-bf11-98c00c618b80 --since 2026-09-25",
             service,
         )
 
