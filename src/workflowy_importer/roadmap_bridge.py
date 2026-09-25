@@ -1162,11 +1162,12 @@ def sync_roadmap(
     ccs_bindings: dict[str, dict] | None = None,
     ready_notifier: Callable[[RoadmapPrompt], bool] | None = None,
 ) -> dict[str, int]:
-    prompts = read_roadmap_db(
-        raw_roadmap_db
-        if raw_roadmap_db is not None
-        else fetch_remote_roadmap_db(repository, branch)
-    )
+    raw = raw_roadmap_db if raw_roadmap_db is not None else fetch_remote_roadmap_db(repository, branch)
+    from .work_items_projection import read_items, sync_items
+    work_items = read_items(raw)
+    if work_items is not None:
+        return sync_items(client, db, work_items, parent=parent)
+    prompts = read_roadmap_db(raw)
     prompt_by_id = {p.prompt_id: p for p in prompts}
     # Compatibility argument only. Workflowy projects canonical roadmap state and
     # the integration pipeline; it never overlays lifecycle state from codex-usage.
