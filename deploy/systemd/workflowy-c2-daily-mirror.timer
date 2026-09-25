@@ -1,0 +1,10 @@
+[Unit]
+Description=Ensure the C2 dashboard is mirrored into each Workflowy daily note
+
+[Timer]
+OnCalendar=*-*-* 00:05:00
+Persistent=true
+AccuracySec=1m
+
+[Install]
+WantedBy=timers.target

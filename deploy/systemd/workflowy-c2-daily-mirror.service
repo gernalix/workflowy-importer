@@ -1,0 +1,11 @@
+[Unit]
+Description=Mirror the C2 dashboard into today's Workflowy note
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/workflowy-importer
+Environment=PYTHONPATH=%h/projects/workflowy-importer/src
+ExecStart=/usr/bin/python3 -m workflowy_importer.bridge_cli ensure-daily-mirror b8d749c7-7e22-4024-bf11-98c00c618b80 --since 2026-09-25
+NoNewPrivileges=true
+PrivateTmp=true

@@ -4,6 +4,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 from workflowy_importer.automation import classify
@@ -12,6 +13,7 @@ from workflowy_importer.chatgpt import conversation_to_markdown
 from workflowy_importer.credentials import CredentialError, load_api_key
 from workflowy_importer.links import workflowy_url
 from workflowy_importer.bridge import _roadmap_prompt_metadata
+from workflowy_importer.bridge_cli import _ensure_daily_mirrors, _ensure_mirror
 
 
 class CredentialTests(unittest.TestCase):
@@ -146,6 +148,44 @@ class RoadmapLaunchMetadataTests(unittest.TestCase):
             self.assertEqual(metadata["model"], "gpt-5.6-terra")
             self.assertEqual(metadata["reasoning"], "medium")
 
+
+
+class EnsureMirrorTests(unittest.TestCase):
+    def test_repeat_run_reuses_same_daily_mirror(self):
+        class FakeClient:
+            def __init__(self):
+                self.mirror_calls = 0
+
+            def resolve_target_id(self, target):
+                self.assert_target = target
+                return "daily-parent"
+
+            def mirror_node(self, node_id, parent_id):
+                self.mirror_calls += 1
+                return ("mirror-1", node_id)
+
+            def get_node(self, node_id):
+                return {"id": node_id, "parent_id": "daily-parent"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(Path(tmp) / "cache.sqlite3")
+            client = FakeClient()
+            first = _ensure_mirror(
+                client,
+                db,
+                node_id="c2-root",
+                parent="today",
+            )
+            second = _ensure_mirror(
+                client,
+                db,
+                node_id="c2-root",
+                parent="today",
+            )
+            self.assertTrue(first["created"])
+            self.assertFalse(second["created"])
+            self.assertEqual(client.mirror_calls, 1)
+            db.close()
 
 
 class ChatGPTTests(unittest.TestCase):
