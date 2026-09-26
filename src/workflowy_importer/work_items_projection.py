@@ -27,6 +27,12 @@ def read_items(raw: bytes) -> list[dict] | None:
         configured = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_item_execution_specs'").fetchone()
         configured_ids = ({r[0] for r in conn.execute('SELECT work_item_id FROM work_item_execution_specs')}
                           if configured else set())
+        has_current_execution = bool(conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='view' AND name='v_work_item_execution_current'"
+        ).fetchone())
+        has_execution_history = bool(conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='view' AND name='v_work_item_execution_history'"
+        ).fetchone())
         ready &= configured_ids
         items = [dict(r) for r in conn.execute('''SELECT * FROM v_work_item_summary
             ORDER BY COALESCE(sort_order,2147483647),created_at,work_item_id''')]
@@ -34,6 +40,14 @@ def read_items(raw: bytes) -> list[dict] | None:
         for item in items:
             key = item['work_item_id']
             item['execution_configured'] = key in configured_ids
+            current = (conn.execute(
+                'SELECT * FROM v_work_item_execution_current WHERE work_item_id=?', (key,)
+            ).fetchone() if has_current_execution else None)
+            item['current_execution'] = dict(current) if current else None
+            item['execution_history'] = ([dict(row) for row in conn.execute('''
+                SELECT * FROM v_work_item_execution_history WHERE work_item_id=?
+                ORDER BY claimed_at DESC,execution_id DESC''', (key,))]
+                if has_execution_history else [])
             item['external_owner'] = (str(item.get('project_name') or '').casefold() == 'personalhub'
                                       or str(item.get('repo') or '').casefold().rstrip('/').endswith('/personalhub'))
             item['tags'] = [r[0] for r in conn.execute(
@@ -73,6 +87,20 @@ def item_text(item: dict, links: dict[str, str]) -> tuple[str, str]:
         lines.append('Cosa fa: ' + esc(item['objective']))
     if item.get('external_owner'):
         lines.append('Gestito da worker esterno PH — non assegnabile da questo supervisor.')
+    execution = item.get('current_execution')
+    if execution:
+        executor = esc(execution.get('executor'))
+        worker = execution.get('worker_ref')
+        detail = executor + (f' · {esc(worker)}' if worker else '')
+        uri = execution.get('conversation_ref_uri')
+        if uri:
+            label = 'Apri chat/thread' if execution.get('conversation_ref_type') in {
+                'chatgpt_web', 'codex_thread'
+            } else 'Apri riferimento'
+            detail += f' · <a href="{esc(uri)}">{label}</a>'
+        else:
+            detail += ' · nessuna chat'
+        lines.append('Executor corrente: ' + detail)
     if item['current_action']:
         lines.append('👉 ' + esc(item['current_action']))
     if item['next_action']:
@@ -102,6 +130,8 @@ def sync_items(client, db, items: list[dict], *, parent: str) -> dict:
     nodes = {str(n['id']): n for n in client.export_nodes() if n.get('id')}
     keys = [ROADMAP_ROOT_KEY] + [GROUP_PREFIX + k for k, _ in GROUPS]
     keys += ['wi:' + i['work_item_id'] for i in items]
+    keys += ['wi-history:' + i['work_item_id'] for i in items
+             if len(i.get('execution_history') or []) > 1]
     keys += [i['prompt_id'] for i in items if i['prompt_id']]
     _hydrate_mapped_nodes(client, db, nodes, keys)
     counts = dict(created=0, updated=0, moved=0)
@@ -148,6 +178,25 @@ def sync_items(client, db, items: list[dict], *, parent: str) -> dict:
     for item in items:
         name, note = item_text(item, links)
         put('wi:'+item['work_item_id'], nodes[links[item['work_item_id']]]['parent_id'], name, note)
+    history_links = {}
+    for item in items:
+        current_id = (item.get('current_execution') or {}).get('execution_id')
+        history = [row for row in item.get('execution_history') or []
+                   if row.get('execution_id') != current_id]
+        if not history:
+            continue
+        history_note = []
+        for row in history:
+            entry = f"{html.escape(str(row.get('executor') or 'unknown'))} · {html.escape(str(row.get('status') or 'unknown'))} · {html.escape(str(row.get('claimed_at') or ''))}"
+            uri = row.get('conversation_ref_uri')
+            if uri:
+                entry += f' · <a href="{html.escape(str(uri), quote=True)}">Apri</a>'
+            else:
+                entry += ' · nessuna chat'
+            history_note.append(entry)
+        history_links[item['work_item_id']] = put('wi-history:'+item['work_item_id'],
+            links[item['work_item_id']], f'🕘 Storico executor ({len(history)})',
+            '\n'.join(history_note))
     # Retire the old top-level Integration/Unknown groups without deleting
     # user-owned children; every canonical prompt node above has already moved.
     for legacy in ('integration', 'unknown'):
@@ -169,6 +218,9 @@ def sync_items(client, db, items: list[dict], *, parent: str) -> dict:
     for item in items:
         owner = links[item['parent_id']] if item['parent_id'] else groups[item['group']]
         desired.setdefault(owner, []).append(links[item['work_item_id']])
+        if item['work_item_id'] in history_links:
+            desired.setdefault(links[item['work_item_id']], []).append(
+                history_links[item['work_item_id']])
     for owner, sequence in desired.items():
         known = set(sequence)
         current = [str(n['id']) for n in nodes.values() if n.get('parent_id') == owner and str(n['id']) in known]
