@@ -22,6 +22,19 @@ from .cache import (
     weekly_summary,
 )
 from .chatgpt import conversation_to_markdown, load_conversation
+from .chatgpt_live import (
+    DEFAULT_CDP_ENDPOINT,
+    DEFAULT_INVENTORY,
+    ChatGPTCloudCollector,
+    CollectionResult,
+    classify_statuses,
+    ensure_chatgpt_schema,
+    get_sync_state,
+    mark_running,
+    set_sync_state,
+    sync_chatgpt_dashboard,
+    upsert_records,
+)
 from .credentials import CredentialError, DEFAULT_SECRET_FILE, load_api_key
 from .control import run_control_actions
 from .links import workflowy_url
@@ -250,6 +263,94 @@ def _ensure_daily_mirrors(
     }
 
 
+def _run_chatgpt_live(
+    args: argparse.Namespace,
+    db: sqlite3.Connection,
+    client: WorkflowyClient,
+) -> dict[str, object]:
+    now = time.time()
+    ensure_chatgpt_schema(db)
+
+    raw_full = get_sync_state(db, "last_full_sweep_at")
+    if raw_full is None:
+        set_sync_state(db, "last_full_sweep_at", now)
+        full_due = False
+    else:
+        try:
+            last_full = float(raw_full)
+        except ValueError:
+            last_full = 0.0
+        full_due = now - last_full >= args.full_sweep_hours * 3600
+
+    try:
+        backoff_until = float(get_sync_state(db, "backoff_until", "0") or 0)
+    except ValueError:
+        backoff_until = 0.0
+    api_enabled = now >= backoff_until
+    error: str | None = None
+
+    known_ids = {
+        str(row["conversation_id"])
+        for row in db.execute(
+            "SELECT conversation_id FROM chatgpt_conversations"
+        )
+    }
+    try:
+        with ChatGPTCloudCollector(
+            args.cdp_endpoint,
+            args.inventory,
+        ) as collector:
+            result = collector.collect(
+                full=full_due,
+                api_enabled=api_enabled,
+                detail_limit=max(0, args.detail_limit),
+                known_ids=known_ids,
+            )
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        result = CollectionResult([], set(), False)
+
+    upsert_records(db, result.records, now=now)
+    mark_running(db, result.running_ids, now=now)
+
+    if result.rate_limited:
+        delay = max(float(result.retry_after or 0), 180.0)
+        set_sync_state(db, "backoff_until", now + delay)
+        error = f"rate_limited:{int(delay)}s"
+    elif api_enabled and error is None:
+        set_sync_state(db, "backoff_until", 0)
+    if result.full_complete:
+        set_sync_state(db, "last_full_sweep_at", now)
+
+    counts = classify_statuses(
+        db,
+        now=now,
+        recent_seconds=max(0.0, args.recent_minutes * 60),
+        running_ttl_seconds=max(30.0, args.running_ttl_minutes * 60),
+    )
+    if sum(counts.values()) == 0 and error:
+        projection = {**counts, "writes": 0, "total": 0}
+    else:
+        projection = sync_chatgpt_dashboard(
+            client,
+            db,
+            parent=args.parent,
+            timezone_name=args.timezone,
+            max_writes=max(1, args.max_writes),
+        )
+    set_sync_state(db, "last_error", error or "")
+    set_sync_state(db, "last_sync_at", now)
+    return {
+        **projection,
+        "collected": len(result.records),
+        "full_sweep": bool(result.full_complete),
+        "api_enabled": api_enabled,
+        "rate_limited": result.rate_limited,
+        "error": error,
+        "status_counts": counts,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="wf", description="Workflowy local automation bridge"
@@ -362,6 +463,20 @@ def build_parser() -> argparse.ArgumentParser:
     selector.add_argument("--conversation-id")
     selector.add_argument("--title")
     chat.add_argument("--parent", default="inbox")
+
+    live = sub.add_parser(
+        "chatgpt-live-sync",
+        help="Track account-wide ChatGPT chats and project them into Workflowy",
+    )
+    live.add_argument("--parent", default="inbox")
+    live.add_argument("--cdp-endpoint", default=DEFAULT_CDP_ENDPOINT)
+    live.add_argument("--inventory", type=Path, default=DEFAULT_INVENTORY)
+    live.add_argument("--recent-minutes", type=float, default=15.0)
+    live.add_argument("--running-ttl-minutes", type=float, default=5.0)
+    live.add_argument("--full-sweep-hours", type=float, default=24.0)
+    live.add_argument("--detail-limit", type=int, default=2)
+    live.add_argument("--max-writes", type=int, default=20)
+    live.add_argument("--timezone", default="Europe/Copenhagen")
 
     projects = sub.add_parser(
         "projects", help="Create an index of local Git projects"
@@ -707,6 +822,14 @@ def run(args: argparse.Namespace) -> int:
                         f"node_id={node_id} "
                         f"destination={decision.destination}"
                     )
+            elif args.command == "chatgpt-live-sync":
+                print(
+                    json.dumps(
+                        _run_chatgpt_live(args, db, client),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
             elif args.command == "chatgpt":
                 conv = load_conversation(
                     args.export,

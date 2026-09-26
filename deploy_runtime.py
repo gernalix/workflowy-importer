@@ -14,6 +14,7 @@ CORE_UNITS = (
     "workflowy-bridge.service",
     "workflowy-roadmap-sync.timer",
     "workflowy-c2-daily-mirror.timer",
+    "workflowy-chatgpt-live.timer",
 )
 
 

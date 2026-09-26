@@ -1,0 +1,11 @@
+[Unit]
+Description=Sync account-wide ChatGPT activity into Workflowy
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/workflowy-importer
+Environment=PYTHONPATH=%h/projects/workflowy-importer/src
+ExecStart=/usr/bin/python3 -m workflowy_importer.bridge_cli chatgpt-live-sync
+NoNewPrivileges=true
+PrivateTmp=true
