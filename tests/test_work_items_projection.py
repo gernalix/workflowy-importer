@@ -22,6 +22,30 @@ class ProjectionTests(unittest.TestCase):
     def test_legacy_not_activated_before_cutover(self):
         self.assertIsNone(read_items(roadmap_bytes()))
 
+    def test_reader_uses_canonical_execution_views(self):
+        with closing(sqlite3.connect(':memory:')) as conn:
+            conn.executescript('''
+                CREATE TABLE work_items(work_item_id TEXT,parent_id TEXT,title TEXT,status TEXT,
+                    sort_order INTEGER,created_at TEXT,updated_at TEXT,project_name TEXT,repo TEXT);
+                INSERT INTO work_items VALUES('one',NULL,'One','running',1,'2026-01-01T00:00:00Z',
+                    '2026-01-01T00:00:00Z','C2','repo');
+                CREATE VIEW prompts AS SELECT * FROM work_items;
+                CREATE VIEW v_work_item_summary AS SELECT * FROM work_items;
+                CREATE VIEW v_work_item_runnable AS SELECT * FROM work_items WHERE 0;
+                CREATE TABLE work_item_tags(work_item_id TEXT,tag TEXT);
+                CREATE TABLE work_item_dependencies(work_item_id TEXT,depends_on_work_item_id TEXT,required INTEGER);
+                CREATE TABLE execution(execution_id TEXT,work_item_id TEXT,executor TEXT,worker_ref TEXT,
+                    status TEXT,conversation_ref_type TEXT,conversation_ref_uri TEXT,claimed_at REAL);
+                INSERT INTO execution VALUES('run:new','one','codex','worker-1','running',
+                    'codex_thread','codex://threads/one',10);
+                CREATE VIEW v_work_item_execution_current AS SELECT * FROM execution;
+                CREATE VIEW v_work_item_execution_history AS SELECT * FROM execution;
+            ''')
+            rows = read_items(conn.serialize())
+        self.assertEqual('codex',rows[0]['current_execution']['executor'])
+        self.assertEqual('codex://threads/one',
+            rows[0]['execution_history'][0]['conversation_ref_uri'])
+
     def test_tree_reuses_legacy_prompt_and_second_sync_is_noop(self):
         from workflowy_importer.roadmap_bridge import _mapping_set
         client = FakeClient()
@@ -57,6 +81,39 @@ class ProjectionTests(unittest.TestCase):
         self.assertIn('Cosa fa: Keep existing data', note)
         self.assertNotIn('mancano dati di esecuzione', note)
         self.assertIn('Gestito da worker esterno PH', note)
+
+    def test_current_executor_link_and_explicit_no_chat_are_compact(self):
+        _, linked = item_text(item('linked', status='running', group='running',
+            current_execution={'executor':'codex','worker_ref':'worker-7',
+                'conversation_ref_type':'codex_thread',
+                'conversation_ref_uri':'codex://threads/thread-7'}), {})
+        self.assertIn('Executor corrente: codex · worker-7', linked)
+        self.assertIn('<a href="codex://threads/thread-7">Apri chat/thread</a>', linked)
+        _, native = item_text(item('native', status='running', group='running',
+            current_execution={'executor':'rdc','worker_ref':'native-2',
+                'conversation_ref_type':'none','conversation_ref_uri':None}), {})
+        self.assertIn('Executor corrente: rdc · native-2 · nessuna chat', native)
+        self.assertNotIn('<a href=', native)
+
+    def test_executor_history_is_a_separate_child_node(self):
+        client = FakeClient()
+        running = item('root', status='running', group='running',
+            current_execution={'execution_id':'new','executor':'codex',
+                'worker_ref':'worker-new','conversation_ref_type':'codex_thread',
+                'conversation_ref_uri':'codex://threads/new'},
+            execution_history=[
+                {'execution_id':'new','executor':'codex','status':'running',
+                 'claimed_at':20,'conversation_ref_uri':'codex://threads/new'},
+                {'execution_id':'old','executor':'chatgpt','status':'failed',
+                 'claimed_at':10,'conversation_ref_uri':'https://chatgpt.com/c/old'},
+            ])
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, [running], parent='inbox')
+            task = next(n for n in client.nodes if n['name'].startswith('👉 root'))
+            history = next(n for n in client.nodes if n['name']=='🕘 Storico executor (1)')
+            self.assertEqual(task['id'],history['parent_id'])
+            self.assertIn('chatgpt · failed · 10',history['note'])
+            self.assertIn('https://chatgpt.com/c/old',history['note'])
 
     def test_legacy_action_groups_move_under_archive(self):
         from workflowy_importer.roadmap_bridge import _mapping_set, GROUP_PREFIX, ROADMAP_ROOT_KEY
