@@ -25,7 +25,7 @@ class FakeClient:
         self.next_id = 1
 
     def resolve_target_id(self, target: str) -> str:
-        return f"target:{target}"
+        raise AssertionError("chatgpt live projection must not GET a target alias")
     def create_node(
         self, parent_id, name, layout_mode="bullets", position="bottom", note=None
     ) -> str:
