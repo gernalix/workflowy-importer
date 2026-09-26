@@ -302,9 +302,12 @@ class ChatGPTCloudCollector:
         self._browser = self._pw.chromium.connect_over_cdp(self.endpoint)
         contexts = self._browser.contexts
         context = contexts[0] if contexts else self._browser.new_context()
-        self._page = next(
-            (page for page in context.pages if "chatgpt.com" in page.url), None
-        )
+        home_pages = [
+            page
+            for page in context.pages
+            if page.url.rstrip("/") == "https://chatgpt.com"
+        ]
+        self._page = home_pages[-1] if home_pages else None
         if self._page is None:
             self._page = context.new_page()
             self._page.goto(
@@ -502,6 +505,130 @@ class ChatGPTCloudCollector:
                 cursor = str(cursor_value) if cursor_value else ""
         return list(records.values())
 
+    @staticmethod
+    def _relevant_metadata_response(url: str) -> bool:
+        return (
+            "/backend-api/conversations?" in url
+            or "/backend-api/gizmos/snorlax/sidebar?" in url
+            or (
+                "/backend-api/gizmos/g-p-" in url
+                and "/conversations?" in url
+            )
+        )
+
+    def _ui_refresh_records(
+        self,
+        *,
+        inventory: dict[str, dict],
+        wait_ms: int = 7000,
+    ) -> tuple[list[ChatRecord], bool, float | None]:
+        assert self._page is not None
+        records: dict[str, ChatRecord] = {}
+        rate_limited = False
+        retry_after: float | None = None
+
+        def on_response(response) -> None:
+            nonlocal rate_limited, retry_after
+            if not self._relevant_metadata_response(response.url):
+                return
+            if response.status == 429:
+                rate_limited = True
+                try:
+                    raw = response.headers.get("retry-after")
+                    retry_after = float(raw) if raw else retry_after
+                except (TypeError, ValueError):
+                    pass
+                return
+            if response.status != 200:
+                return
+            try:
+                body = response.json()
+            except Exception:
+                return
+            source = (
+                "project"
+                if "/backend-api/gizmos/" in response.url
+                else "chat"
+            )
+            for item in self._conversation_payloads(body):
+                record = record_from_payload(
+                    item,
+                    source=source,
+                    inventory=inventory,
+                )
+                if record:
+                    records[record.conversation_id] = record
+
+        self._page.on("response", on_response)
+        try:
+            self._page.reload(
+                wait_until="domcontentloaded",
+                timeout=45_000,
+            )
+            self._page.wait_for_timeout(wait_ms)
+        finally:
+            self._page.remove_listener("response", on_response)
+        return list(records.values()), rate_limited, retry_after
+
+    def _navigate_detail_record(
+        self,
+        conversation_id: str,
+        inventory: dict[str, dict],
+    ) -> ChatRecord | None:
+        assert self._page is not None
+        target = _conversation_url(
+            conversation_id,
+            None,
+            inventory,
+        )
+        captured: dict | None = None
+
+        def on_response(response) -> None:
+            nonlocal captured
+            marker = f"/backend-api/conversation/{conversation_id}"
+            if marker not in response.url or response.status != 200:
+                return
+            try:
+                body = response.json()
+            except Exception:
+                return
+            if isinstance(body, dict):
+                captured = body
+
+        self._page.on("response", on_response)
+        try:
+            self._page.goto(
+                target,
+                wait_until="domcontentloaded",
+                timeout=45_000,
+            )
+            self._page.wait_for_timeout(2000)
+        finally:
+            self._page.remove_listener("response", on_response)
+        if not captured:
+            return None
+        record = record_from_payload(
+            captured,
+            source="detail",
+            inventory=inventory,
+        )
+        if record is None:
+            return None
+        mapping = captured.get("mapping", {})
+        if isinstance(mapping, dict):
+            for node in mapping.values():
+                message = (
+                    node.get("message")
+                    if isinstance(node, dict)
+                    else None
+                )
+                if isinstance(message, dict) and str(
+                    message.get("status") or ""
+                ) == "in_progress":
+                    record.running = True
+                    break
+        return record
+
     def _detail_record(
         self, conversation_id: str, inventory: dict[str, dict]
     ) -> ChatRecord | None:
@@ -563,62 +690,62 @@ class ChatGPTCloudCollector:
             return CollectionResult([], running_ids, False)
 
         records: dict[str, ChatRecord] = {}
-        try:
-            for record in self._conversation_pages(
-                full=full, inventory=inventory
-            ):
-                records[record.conversation_id] = record
-            for record in self._recent_project_conversations(
-                inventory=inventory
-            ):
-                records[record.conversation_id] = record
-            if full:
-                for record in self._project_conversations(inventory=inventory):
-                    records[record.conversation_id] = record
-
-            detail_candidates = sorted(
-                records.values(),
-                key=lambda row: row.last_interaction_at or 0,
-                reverse=True,
-            )
-            known_ids = {row.conversation_id for row in detail_candidates}
-            unseen_inventory = sorted(
-                (
-                    item
-                    for cid, item in inventory.items()
-                    if cid not in known_ids and cid not in previously_known
-                ),
-                key=lambda item: float(item.get("first_seen_epoch") or 0),
-                reverse=True,
-            )
-            candidate_ids = [row.conversation_id for row in detail_candidates]
-            candidate_ids.extend(
-                str(item["conversation_id"]) for item in unseen_inventory
-            )
-            for conversation_id in candidate_ids[: max(0, detail_limit)]:
-                detail = self._detail_record(conversation_id, inventory)
-                if detail:
-                    previous = records.get(conversation_id)
-                    if previous and not detail.gizmo_id:
-                        detail.gizmo_id = previous.gizmo_id
-                        detail.url = previous.url
-                    records[conversation_id] = detail
-                    if detail.running:
-                        running_ids.add(conversation_id)
-        except ChatGPTRateLimited as exc:
+        refreshed, rate_limited, retry_after = self._ui_refresh_records(
+            inventory=inventory
+        )
+        for record in refreshed:
+            records[record.conversation_id] = record
+        if rate_limited:
             return CollectionResult(
                 list(records.values()),
                 running_ids,
                 False,
                 rate_limited=True,
-                retry_after=exc.retry_after,
+                retry_after=retry_after,
             )
 
+        refreshed_ids = set(records)
+        unseen_inventory = sorted(
+            (
+                item
+                for cid, item in inventory.items()
+                if cid not in refreshed_ids
+                and cid not in previously_known
+            ),
+            key=lambda item: float(item.get("first_seen_epoch") or 0),
+            reverse=True,
+        )
+        for item in unseen_inventory[: max(0, detail_limit)]:
+            conversation_id = str(item["conversation_id"])
+            try:
+                detail = self._navigate_detail_record(
+                    conversation_id,
+                    inventory,
+                )
+            except Exception:
+                continue
+            if detail:
+                records[conversation_id] = detail
+                if detail.running:
+                    running_ids.add(conversation_id)
+
+        if self._page is not None and "/c/" in self._page.url:
+            try:
+                self._page.evaluate(
+                    "() => history.replaceState({}, '', '/')"
+                )
+            except Exception:
+                pass
+
+        known_after = previously_known | set(records)
+        inventory_complete = set(inventory).issubset(known_after)
         running_ids.update(
             row.conversation_id for row in records.values() if row.running
         )
         return CollectionResult(
-            list(records.values()), running_ids, full_complete=full
+            list(records.values()),
+            running_ids,
+            full_complete=inventory_complete,
         )
 
 

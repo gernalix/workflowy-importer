@@ -152,6 +152,41 @@ class ChatGPTLiveTests(unittest.TestCase):
             ChatGPTCloudCollector._project_ids(value),
         )
 
+    def test_ui_refresh_drives_collection_without_direct_fetch(self) -> None:
+        class Collector(ChatGPTCloudCollector):
+            def _open_running_ids(self):
+                return set()
+
+            def _ui_refresh_records(self, *, inventory, wait_ms=7000):
+                return (
+                    [
+                        ChatRecord(
+                            "cid",
+                            "Primary chat",
+                            "https://chatgpt.com/c/cid",
+                            10.0,
+                            20.0,
+                            "chat",
+                        )
+                    ],
+                    False,
+                    None,
+                )
+
+        collector = Collector(
+            inventory_path=Path(self.tmp.name) / "missing.json",
+            request_delay=0,
+        )
+        result = collector.collect(
+            full=False,
+            api_enabled=True,
+            detail_limit=0,
+            known_ids=set(),
+        )
+        self.assertFalse(result.rate_limited)
+        self.assertTrue(result.full_complete)
+        self.assertEqual(["cid"], [row.conversation_id for row in result.records])
+
 
 if __name__ == "__main__":
     unittest.main()
