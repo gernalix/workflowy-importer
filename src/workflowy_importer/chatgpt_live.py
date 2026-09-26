@@ -850,7 +850,7 @@ def sync_chatgpt_dashboard(
         )
         for status in ("RUNNING", "RECENT", "IDLE")
     }
-    parent_id = client.resolve_target_id(parent)
+    parent_id = parent
     root_name = (
         "🤖 ChatGPT live chats"
         f" · 🟢 {counts['RUNNING']} · 🟡 {counts['RECENT']} · ⚪ {counts['IDLE']}"
