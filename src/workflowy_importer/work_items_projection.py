@@ -25,15 +25,17 @@ def read_items(raw: bytes) -> list[dict] | None:
             return None  # C2 is activated only by the canonical writer cutover.
         ready = {r[0] for r in conn.execute('SELECT work_item_id FROM v_work_item_runnable')}
         configured = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_item_execution_specs'").fetchone()
-        if configured:
-            ready &= {r[0] for r in conn.execute('SELECT work_item_id FROM work_item_execution_specs')}
-        else:
-            ready.clear()
+        configured_ids = ({r[0] for r in conn.execute('SELECT work_item_id FROM work_item_execution_specs')}
+                          if configured else set())
+        ready &= configured_ids
         items = [dict(r) for r in conn.execute('''SELECT * FROM v_work_item_summary
             ORDER BY COALESCE(sort_order,2147483647),created_at,work_item_id''')]
         by_id = {r['work_item_id']: r for r in items}
         for item in items:
             key = item['work_item_id']
+            item['execution_configured'] = key in configured_ids
+            item['external_owner'] = (str(item.get('project_name') or '').casefold() == 'personalhub'
+                                      or str(item.get('repo') or '').casefold().rstrip('/').endswith('/personalhub'))
             item['tags'] = [r[0] for r in conn.execute(
                 'SELECT tag FROM work_item_tags WHERE work_item_id=? ORDER BY tag', (key,))]
             item['dependencies'] = [dict(r) for r in conn.execute('''
@@ -67,6 +69,10 @@ def item_text(item: dict, links: dict[str, str]) -> tuple[str, str]:
     identity = f"[{item['prompt_id']}] " if item['prompt_id'] else ''
     name = f"{icon} {identity}{esc(item['title'])}"
     lines = [f"✅ {item['completed_actionable']}/{item['total_actionable']} · {item['progress_percent']:g}%"]
+    if item.get('objective'):
+        lines.append('Cosa fa: ' + esc(item['objective']))
+    if item.get('external_owner'):
+        lines.append('Gestito da worker esterno PH — non assegnabile da questo supervisor.')
     if item['current_action']:
         lines.append('👉 ' + esc(item['current_action']))
     if item['next_action']:
@@ -78,8 +84,9 @@ def item_text(item: dict, links: dict[str, str]) -> tuple[str, str]:
         lines.append('In attesa di: ' + ', '.join(esc(d['title']) for d in waiting))
     elif item['executor_policy'] == 'human' and item['status'] not in DONE:
         lines.append('In attesa di un intervento umano.')
-    elif item['group'] == 'waiting' and not item['blocker']:
-        lines.append('In attesa di configurazione dell’esecuzione.')
+    elif item['group'] == 'waiting' and not item['blocker'] and not item.get('external_owner'):
+        lines.append('In attesa: mancano dati di esecuzione.' if item.get('execution_configured') is False
+                     else 'In attesa di una dipendenza o risorsa disponibile.')
     project_tag = '#progetto-' + re.sub(r'[^a-z0-9]+', '-', str(item['project_name'] or '').lower()).strip('-')
     lines.append(' · '.join(esc(v) for v in (
         item['project_name'], project_tag, '#executor-' + item['executor_policy'], '#stato-' + item['status'],

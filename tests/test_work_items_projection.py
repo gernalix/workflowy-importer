@@ -49,6 +49,15 @@ class ProjectionTests(unittest.TestCase):
         self.assertIn('In attesa di: Build', note)
         self.assertIn('https://workflowy.com/#/abc', note)
 
+    def test_waiting_missing_execution_data_and_external_ph_owner(self):
+        _, waiting = item_text(item('waiting', group='waiting', execution_configured=False), {})
+        self.assertIn('mancano dati di esecuzione', waiting)
+        _, note = item_text(item('ph', group='waiting', objective='Keep existing data',
+            execution_configured=False, external_owner=True), {})
+        self.assertIn('Cosa fa: Keep existing data', note)
+        self.assertNotIn('mancano dati di esecuzione', note)
+        self.assertIn('Gestito da worker esterno PH', note)
+
     def test_legacy_action_groups_move_under_archive(self):
         from workflowy_importer.roadmap_bridge import _mapping_set, GROUP_PREFIX, ROADMAP_ROOT_KEY
         client = FakeClient()
