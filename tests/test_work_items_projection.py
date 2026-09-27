@@ -415,6 +415,20 @@ class ProjectionTests(unittest.TestCase):
                        if n.get('parent_id') == ready['id'] and n['name'].startswith('☐')]
             self.assertEqual(['two', 'one'], visible)
 
+    def test_small_order_difference_moves_only_divergent_prefix(self):
+        client = FakeClient()
+        adapter = Mock(return_value={'status':'ok'})
+        base = [item(name, sort_order=i) for i, name in enumerate(('one','two','three','four','five'), 1)]
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, base, parent='inbox', manual_order_adapter=adapter)
+            manual = [
+                item('one', sort_order=1, manual_rank=1, manual_order_source='workflowy'),
+                item('two', sort_order=2, manual_rank=0, manual_order_source='workflowy'),
+                *base[2:],
+            ]
+            result = sync_items(client, db, manual, parent='inbox', manual_order_adapter=adapter)
+        self.assertEqual(2, result['moved'])
+
     def test_reset_submits_clear_for_scope_only(self):
         client = FakeClient()
         adapter = Mock(return_value={'status':'ok'})

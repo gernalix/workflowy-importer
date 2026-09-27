@@ -646,7 +646,16 @@ def _sync_items_once(
     for owner, sequence in sequences.items():
         current = [node_id for node_id in _children_in_order(nodes, owner) if node_id in set(sequence)]
         if current != sequence:
-            for node_id in reversed(sequence):
+            # Moving every sibling on any mismatch is correct but pathological for
+            # large Workflowy sections: a two-item reorder could rewrite hundreds
+            # of nodes and hit the API rate limit. Preserve the longest suffix
+            # already in canonical order and rebuild only the divergent prefix.
+            suffix = 0
+            limit = min(len(current), len(sequence))
+            while suffix < limit and current[-1 - suffix] == sequence[-1 - suffix]:
+                suffix += 1
+            prefix = sequence[:len(sequence) - suffix] if suffix else sequence
+            for node_id in reversed(prefix):
                 client.move_node(node_id, owner, position='top')
                 counts['moved'] += 1
 
