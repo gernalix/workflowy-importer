@@ -12,6 +12,13 @@ class RoadmapSyncTimerTests(unittest.TestCase):
         self.assertIn("OnUnitInactiveSec=75s", timer)
         self.assertNotIn("OnUnitActiveSec=30s", timer)
 
+    def test_writer_applied_roadmap_change_schedules_immediate_projection(self) -> None:
+        path = (
+            ROOT / "deploy/systemd/workflowy-roadmap-sync.path"
+        ).read_text(encoding="utf-8")
+        self.assertIn("PathChanged=%h/projects/codex-roadmap/roadmap.sqlite", path)
+        self.assertIn("Unit=workflowy-roadmap-sync.service", path)
+
     def test_c2_daily_mirror_runs_each_day_and_is_persistent(self) -> None:
         timer = (
             ROOT / "deploy/systemd/workflowy-c2-daily-mirror.timer"

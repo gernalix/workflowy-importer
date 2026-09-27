@@ -19,6 +19,35 @@ def item(key, **kw):
 
 
 class ProjectionTests(unittest.TestCase):
+    def test_writer_applied_item_is_projected_and_dashboard_acknowledges_it(self):
+        client = FakeClient()
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, [item('before')], parent='inbox')
+
+            # The second canonical snapshot represents the writer-applied
+            # mutation. The path unit schedules this same projector; no
+            # Workflowy child command or manual dashboard action is involved.
+            sync_items(client, db, [item('before'), item('writer-applied')], parent='inbox')
+
+            visible = next(n for n in client.nodes if 'writer-applied' in n['name'])
+            root = next(n for n in client.nodes if n['name'] == 'Codex')
+            self.assertEqual('PRONTI', next(n for n in client.nodes if n['id'] == visible['parent_id'])['name'])
+            self.assertIn('✅ Proiezione Workflowy allineata', root['note'])
+            self.assertNotIn('⏳ Proiezione Workflowy in corso', root['note'])
+
+    def test_failed_projection_leaves_pending_status_visible(self):
+        class FailBeforeGroups(FakeClient):
+            def create_node(self, *args, **kwargs):
+                if self.nodes:
+                    raise RuntimeError('projection_failed')
+                return super().create_node(*args, **kwargs)
+
+        client = FailBeforeGroups()
+        with closing(connect(':memory:')) as db:
+            with self.assertRaisesRegex(RuntimeError, 'projection_failed'):
+                sync_items(client, db, [item('writer-applied')], parent='inbox')
+        self.assertIn('⏳ Proiezione Workflowy in corso', client.nodes[0]['note'])
+
     def test_legacy_not_activated_before_cutover(self):
         self.assertIsNone(read_items(roadmap_bytes()))
 

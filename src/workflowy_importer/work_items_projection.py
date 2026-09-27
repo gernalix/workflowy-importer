@@ -126,7 +126,14 @@ def item_text(item: dict, links: dict[str, str]) -> tuple[str, str]:
 
 
 def sync_items(client, db, items: list[dict], *, parent: str) -> dict:
-    from .roadmap_bridge import _mapping_get, _mapping_set, _hydrate_mapped_nodes, GROUP_PREFIX, ROADMAP_ROOT_KEY
+    from .roadmap_bridge import (
+        GROUP_PREFIX,
+        ROADMAP_ROOT_KEY,
+        _hydrate_mapped_nodes,
+        _mapping_get,
+        _mapping_set,
+        roadmap_projection_note,
+    )
     nodes = {str(n['id']): n for n in client.export_nodes() if n.get('id')}
     keys = [ROADMAP_ROOT_KEY] + [GROUP_PREFIX + k for k, _ in GROUPS]
     keys += ['wi:' + i['work_item_id'] for i in items]
@@ -136,7 +143,7 @@ def sync_items(client, db, items: list[dict], *, parent: str) -> dict:
     _hydrate_mapped_nodes(client, db, nodes, keys)
     counts = dict(created=0, updated=0, moved=0)
 
-    def put(key, parent_id, name, note='', layout='bullets', legacy=None):
+    def put(key, parent_id, name, note='', layout='bullets', legacy=None, count_update=True):
         mapped = _mapping_get(db, key) or (_mapping_get(db, legacy) if legacy else None)
         node = nodes.get(mapped[0]) if mapped else None
         if node is None:
@@ -152,7 +159,8 @@ def sync_items(client, db, items: list[dict], *, parent: str) -> dict:
                 client.update_node(node_id, name, note=note, layout_mode=layout)
                 node.update(name=name, note=note)
                 node.setdefault('data', {})['layoutMode'] = layout
-                counts['updated'] += 1
+                if count_update:
+                    counts['updated'] += 1
             if node.get('parent_id') != parent_id:
                 client.move_node(node_id, parent_id, position='bottom')
                 node['parent_id'] = parent_id
@@ -161,7 +169,8 @@ def sync_items(client, db, items: list[dict], *, parent: str) -> dict:
         db.commit()  # Preserve acknowledged remote identities across crashes.
         return node_id
 
-    root = put(ROADMAP_ROOT_KEY, parent, 'Codex', 'Checklist 2.0 · work_items è la fonte canonica.', 'h1')
+    root_source = 'Checklist 2.0 · work_items è la fonte canonica.'
+    root = put(ROADMAP_ROOT_KEY, parent, 'Codex', roadmap_projection_note(pending=True, source=root_source), 'h1', count_update=False)
     groups = {k: put(GROUP_PREFIX+k, root, label, layout='h2') for k, label in GROUPS}
     links = {}
     pending = list(items)
@@ -228,4 +237,5 @@ def sync_items(client, db, items: list[dict], *, parent: str) -> dict:
             for node_id in reversed(sequence):
                 client.move_node(node_id, owner, position='top')
                 counts['moved'] += 1
+    put(ROADMAP_ROOT_KEY, parent, 'Codex', roadmap_projection_note(pending=False, source=root_source), 'h1', count_update=False)
     return dict(prompts=len(items), **counts, mutations_submitted=0, warnings=0)

@@ -13,6 +13,7 @@ UNITS = tuple(sorted(path.name for path in UNIT_SOURCE.iterdir() if path.suffix 
 CORE_UNITS = (
     "workflowy-bridge.service",
     "workflowy-roadmap-sync.timer",
+    "workflowy-roadmap-sync.path",
     "workflowy-c2-daily-mirror.timer",
     "workflowy-chatgpt-live.timer",
 )

@@ -52,6 +52,17 @@ LEGACY_GROUP_KEYS = ("pending", "failed", "cancelled", "superseded")
 PROMPT_NODE_RE = re.compile(r"^\[(\d{6})\]\s")
 
 
+def roadmap_projection_note(*, pending: bool, source: str | None = None) -> str:
+    state = (
+        "⏳ Proiezione Workflowy in corso: la vista potrebbe non includere ancora "
+        "l'ultima mutation applicata."
+        if pending
+        else "✅ Proiezione Workflowy allineata alla roadmap canonica."
+    )
+    heading = source or "Dashboard operativa della roadmap Codex. roadmap.sqlite resta la fonte canonica."
+    return heading + "\n\n" + state
+
+
 @dataclass(slots=True)
 class RoadmapPrompt:
     prompt_id: str
@@ -1238,12 +1249,12 @@ def sync_roadmap(
         key=ROADMAP_ROOT_KEY,
         parent_id=parent,
         name="Codex",
-        note="Dashboard operativa della roadmap Codex. roadmap.sqlite resta la fonte canonica.",
+        note=roadmap_projection_note(pending=True),
         layout_mode="h1",
     )
     current_root = by_id.get(root_id)
     if current_root:
-        root_note = "Dashboard operativa della roadmap Codex. roadmap.sqlite resta la fonte canonica."
+        root_note = roadmap_projection_note(pending=True)
         root_data = current_root.get("data") if isinstance(current_root.get("data"), dict) else {}
         root_layout = str(root_data.get("layoutMode") or "bullets")
         if (
@@ -1590,6 +1601,15 @@ def sync_roadmap(
         ready_notifier or _send_ready_telegram,
     )
     warnings += ready_notification_failures
+
+    # Leave an incomplete projection visible if a preceding remote write
+    # raises. Only this final acknowledgement marks the dashboard current.
+    client.update_node(
+        root_id,
+        "Codex",
+        note=roadmap_projection_note(pending=False),
+        layout_mode="h1",
+    )
 
     db.commit()
     return {

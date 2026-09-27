@@ -1,0 +1,9 @@
+[Unit]
+Description=Schedule Workflowy projection after a canonical roadmap update
+
+[Path]
+PathChanged=%h/projects/codex-roadmap/roadmap.sqlite
+Unit=workflowy-roadmap-sync.service
+
+[Install]
+WantedBy=default.target
