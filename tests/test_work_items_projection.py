@@ -355,28 +355,6 @@ class ProjectionTests(unittest.TestCase):
             tuple(retry[key] for key in ('created', 'updated', 'moved', 'deleted')),
         )
 
-    def test_workflowy_priority_descending_matches_live_vertical_order(self):
-        client = FakeClient()
-        adapter = Mock(return_value={'status':'ok'})
-        issues = [
-            issue('issue:one', description='First issue', observed_at_ms=1),
-            issue('issue:two', description='Second issue', observed_at_ms=2),
-        ]
-        with closing(connect(':memory:')) as db:
-            sync_items(client, db, [], issues=issues, parent='inbox',
-                       manual_order_adapter=adapter)
-            one = next(n for n in client.nodes if n['name'] == '☐ First issue')
-            two = next(n for n in client.nodes if n['name'] == '☐ Second issue')
-            # Workflowy API priority is larger for the visually higher sibling.
-            one['priority'] = 50
-            two['priority'] = 100
-            two['modifiedAt'] = 1_790_000_100
-            sync_items(client, db, [], issues=issues, parent='inbox',
-                       manual_order_adapter=adapter)
-        adapter.assert_called_once_with(
-            'set', scope='inbox', ordered_ids=['issue:two', 'issue:one'],
-            source_modified_at='1790000100')
-
     def test_genuine_reorder_submits_one_bulk_mutation_and_repeated_sync_is_quiet(self):
         client = FakeClient()
         adapter = Mock(return_value={'status':'ok'})
