@@ -569,6 +569,35 @@ class ProjectionTests(unittest.TestCase):
             self.assertNotEqual(old_reset_id, fresh['id'])
             self.assertFalse(fresh.get('completed', False))
 
+    def test_reset_waits_for_canonical_clear_readback_before_accepting_new_reorder(self):
+        client = FakeClient()
+        adapter = Mock(return_value={'status': 'ok'})
+        ranked = [
+            item('one', sort_order=1, manual_rank=2, manual_order_source='workflowy',
+                 manual_order_source_modified_at='old-generation'),
+            item('two', sort_order=2, manual_rank=1, manual_order_source='workflowy',
+                 manual_order_source_modified_at='old-generation'),
+        ]
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, ranked, parent='inbox', manual_order_adapter=adapter)
+            roadmap = next(n for n in client.nodes if n['name'] == 'Roadmap')
+            reset = next(n for n in client.nodes if n['name'] == 'Reset to AI order'
+                         and n.get('parent_id') == roadmap['id'])
+            reset['completed'] = True
+            first = sync_items(client, db, ranked, parent='inbox', manual_order_adapter=adapter)
+            # The writer clear is asynchronous. A second sync can still read
+            # the old manual ranks; it must not echo the just-rendered AI order
+            # back as a fresh manual override while force_ai is awaiting ack.
+            second = sync_items(client, db, ranked, parent='inbox', manual_order_adapter=adapter)
+            mapping = db.execute(
+                "SELECT metadata_json FROM mappings WHERE external_key=?",
+                ('__manual_scope__:roadmap',),
+            ).fetchone()
+        self.assertEqual((1, 0), (first['mutations_submitted'], second['mutations_submitted']))
+        self.assertEqual(1, adapter.call_count)
+        self.assertEqual('clear', adapter.call_args.args[0])
+        self.assertTrue(__import__('json').loads(mapping['metadata_json']).get('force_ai'))
+
     def test_repeated_reset_without_override_is_consumed_as_safe_noop(self):
         client = FakeClient()
         adapter = Mock(side_effect=AssertionError('backend clear must not run'))
