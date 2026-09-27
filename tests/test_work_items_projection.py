@@ -355,6 +355,78 @@ class ProjectionTests(unittest.TestCase):
             tuple(retry[key] for key in ('created', 'updated', 'moved', 'deleted')),
         )
 
+    def test_large_reversed_terminal_history_is_not_reordered_or_submitted(self):
+        client = FakeClient()
+        adapter = Mock(return_value={'status': 'ok'})
+        rows = [
+            item(
+                f'archive-{index:03d}', group='archive', status='completed',
+                sort_order=index,
+            )
+            for index in range(225)
+        ]
+        rows += [
+            item('done-parent', group='completed', status='completed', sort_order=300),
+            *[
+                item(
+                    f'done-child-{index}', parent_id='done-parent',
+                    group='completed', status='completed', sort_order=301 + index,
+                )
+                for index in range(3)
+            ],
+        ]
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, rows, parent='inbox', manual_order_adapter=adapter)
+            archive = next(n for n in client.nodes if n['name'] == 'Archive')
+            archived = [
+                n for n in client.nodes
+                if n.get('parent_id') == archive['id'] and n['name'].startswith('✅ archive-')
+            ]
+            done_parent = next(n for n in client.nodes if n['name'].endswith(' done-parent'))
+            done_children = [
+                n for n in client.nodes
+                if n.get('parent_id') == done_parent['id']
+                and n['name'].startswith('✅ done-child-')
+            ]
+            for node in archived:
+                client.move_node(node['id'], archive['id'], position='top')
+            for node in done_children:
+                client.move_node(node['id'], done_parent['id'], position='top')
+
+            result = sync_items(
+                client, db, rows, parent='inbox', manual_order_adapter=adapter,
+            )
+
+        self.assertEqual(0, result['moved'])
+        self.assertEqual(0, result['mutations_submitted'])
+        adapter.assert_not_called()
+
+    def test_running_reorder_remains_operational(self):
+        client = FakeClient()
+        adapter = Mock(return_value={'status': 'ok'})
+        rows = [
+            item('running-one', group='running', status='running', sort_order=1),
+            item('running-two', group='running', status='running', sort_order=2),
+        ]
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, rows, parent='inbox', manual_order_adapter=adapter)
+            running = next(n for n in client.nodes if n['name'] == 'Running')
+            second = next(n for n in client.nodes if n['name'].endswith(' running-two'))
+            client.move_node(second['id'], running['id'], position='top')
+            result = sync_items(
+                client, db, rows, parent='inbox', manual_order_adapter=adapter,
+            )
+            visible = [
+                n['name'].split()[-1] for n in client.nodes
+                if n.get('parent_id') == running['id'] and n['name'].startswith('👉')
+            ]
+        self.assertEqual(1, result['mutations_submitted'])
+        adapter.assert_called_once_with(
+            'set', scope='roadmap', ordered_ids=['running-two', 'running-one'],
+            source_modified_at='1790000000',
+        )
+        self.assertEqual(['running-two', 'running-one'], visible)
+
     def test_genuine_reorder_submits_one_bulk_mutation_and_repeated_sync_is_quiet(self):
         client = FakeClient()
         adapter = Mock(return_value={'status':'ok'})

@@ -19,11 +19,12 @@ ROADMAP_SECTIONS = (
     ('completed', 'Done'), ('archive', 'Archive'),
 )
 DONE = {'completed', 'waived', 'cancelled', 'superseded'}
+TERMINAL_PRESENTATION_GROUPS = frozenset({'completed', 'archive'})
 SCOPE_PREFIX = '__manual_scope__:'
 RESET_PREFIX = '__manual_reset__:'
 MIRROR_PREFIX = '__dag_mirror__:'
 ISSUE_DETAIL_PREFIX = 'issue-inbox-detail:'
-PROJECTION_VERSION = 2
+PROJECTION_VERSION = 3
 DEFAULT_ORDER_HELPER: Path | None = None
 ROOT_SOURCE = 'Checklist 2.0 · le viste canoniche C2 sono la fonte autoritativa.'
 
@@ -520,6 +521,14 @@ def _sync_items_once(
     scope_canonical = {'inbox': issue_links, 'roadmap': links}
     scope_rows = {'inbox': by_issue, 'roadmap': by_item}
     scope_expected = {'inbox': issue_expected_parents, 'roadmap': expected_parents}
+    scope_order_canonical = {
+        'inbox': issue_links,
+        'roadmap': {
+            item['work_item_id']: links[item['work_item_id']]
+            for item in items
+            if item['group'] not in TERMINAL_PRESENTATION_GROUPS
+        },
+    }
     mutations_submitted = 0
     warnings = 0
     pending_orders: dict[str, list[str] | None] = {}
@@ -532,7 +541,15 @@ def _sync_items_once(
         scope_mapping = _mapping_get(db, scope_key)
         state = dict(scope_mapping[1] if scope_mapping else {})
         canonical = scope_canonical[scope]
-        current_order = _vertical_ids(nodes, scope_ids[scope], canonical)
+        order_canonical = scope_order_canonical[scope]
+        current_order = _vertical_ids(nodes, scope_ids[scope], order_canonical)
+        if isinstance(state.get('pending_order'), list):
+            pending = [entity_id for entity_id in state['pending_order']
+                       if entity_id in order_canonical]
+            if pending:
+                state['pending_order'] = pending
+            else:
+                state.pop('pending_order', None)
         last_order = state.get('last_render_order')
         last_parents = state.get('expected_parents') or {}
         state_is_current = state.get('projection_version') == PROJECTION_VERSION
@@ -582,7 +599,7 @@ def _sync_items_once(
         elif (state_is_current and isinstance(last_order, list)
               and set(current_order) == set(last_order)
               and current_order != last_order):
-            modified = str(_source_modified_at(nodes, canonical))
+            modified = str(_source_modified_at(nodes, order_canonical))
             request_key = _semantic_event_key(
                 'set', scope,
                 {'ordered_ids': current_order, 'source_modified_at': modified},
@@ -641,6 +658,8 @@ def _sync_items_once(
         scope_ids['roadmap']: [reset_ids['roadmap'], *groups.values()],
     }
     for item in ordered_items:
+        if item['group'] in TERMINAL_PRESENTATION_GROUPS:
+            continue
         sequences.setdefault(expected_parents[item['work_item_id']], []).append(
             links[item['work_item_id']])
     for owner, sequence in sequences.items():
@@ -706,7 +725,8 @@ def _sync_items_once(
     projected_nodes = {str(n['id']): n for n in client.export_nodes() if n.get('id')}
     for scope in ('inbox', 'roadmap'):
         canonical = scope_canonical[scope]
-        order = _vertical_ids(projected_nodes, scope_ids[scope], canonical)
+        order_canonical = scope_order_canonical[scope]
+        order = _vertical_ids(projected_nodes, scope_ids[scope], order_canonical)
         mapping = _mapping_get(db, SCOPE_PREFIX + scope)
         state = dict(mapping[1] if mapping else {})
         state.update({
@@ -717,13 +737,14 @@ def _sync_items_once(
             'last_render_fingerprint': _state_fingerprint(
                 order, {entity_id: scope_expected[scope][entity_id]
                         for entity_id in canonical}),
-            'last_render_source_modified_at': _source_modified_at(projected_nodes, canonical),
+            'last_render_source_modified_at': _source_modified_at(
+                projected_nodes, order_canonical),
         })
         # Canonical workflowy ranks acknowledge the pending local intent.
-        if (state.get('pending_order') == order and canonical
+        if (state.get('pending_order') == order and order_canonical
                 and all(_manual_rank(scope_rows[scope][entity_id]) is not None
                         and str(_manual_source(scope_rows[scope][entity_id]) or '').casefold() == 'workflowy'
-                        for entity_id in canonical)):
+                        for entity_id in order_canonical)):
             state.pop('pending_order', None)
         if state.get('force_ai') and canonical and all(
                 _manual_rank(scope_rows[scope][entity_id]) is None
