@@ -448,6 +448,34 @@ class ProjectionTests(unittest.TestCase):
             self.assertEqual(0, again['mutations_submitted'])
             self.assertEqual(1, adapter.call_count)
 
+    def test_waiting_nested_drag_is_order_intent_and_is_flattened_stably(self):
+        client = FakeClient()
+        adapter = Mock(return_value={'status': 'ok'})
+        rows = [
+            item('one', group='waiting', sort_order=1),
+            item('two', group='waiting', sort_order=2),
+            item('three', group='waiting', sort_order=3),
+        ]
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, rows, parent='inbox', manual_order_adapter=adapter)
+            waiting = next(n for n in client.nodes if n['name'] == 'Waiting')
+            one = next(n for n in client.nodes if n['name'].startswith('☐ one'))
+            three = next(n for n in client.nodes if n['name'].startswith('☐ three'))
+            # Workflowy can encode a visual drag as temporary nesting under a
+            # sibling. The visible DFS order is one,three,two and must be
+            # captured rather than rejected as a lifecycle-parent change.
+            client.move_node(three['id'], one['id'], position='top')
+            result = sync_items(client, db, rows, parent='inbox', manual_order_adapter=adapter)
+            visible = [n['name'].split()[-1] for n in client.nodes
+                       if n.get('parent_id') == waiting['id'] and n['name'].startswith('☐')]
+        self.assertEqual(0, result['warnings'])
+        self.assertEqual(1, result['mutations_submitted'])
+        adapter.assert_called_once_with(
+            'set', scope='roadmap', ordered_ids=['one', 'three', 'two'],
+            source_modified_at='1790000000')
+        self.assertEqual(['one', 'three', 'two'], visible)
+        self.assertLessEqual(result['moved'], 3)
+
     def test_issue_inbox_reorder_sends_only_real_issue_ids(self):
         client = FakeClient()
         adapter = Mock(return_value={'status':'ok'})
