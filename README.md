@@ -260,7 +260,7 @@ Ogni prompt espone azioni operative nella nota: `🚀 Apri`, `📋 Copia`, `🌐
 
 Lo stato lifecycle mostrato sotto ogni prompt è **sola lettura**. Workflowy non interpreta più figli `R/P/B/F` e non può portare direttamente un task a `running`, `PASS`, `BLOCKED` o `FAIL`. L'avvio passa da `🚀 Avvia` → `roadmap_start.py`; la finalizzazione passa dall'unico `roadmap_finish.py`. La telemetria Codex e lo stato dell'integratore possono essere mostrati come evidenza separata, ma non sovrascrivono lo stato canonico della roadmap.
 
-Il timer opzionale `deploy/systemd/workflowy-roadmap-sync.timer` mantiene la dashboard sincronizzata con `roadmap.sqlite`, che resta l'unica source of truth.
+Il timer opzionale `deploy/systemd/workflowy-roadmap-sync.timer` mantiene la dashboard sincronizzata con `roadmap.sqlite`, che resta l'unica source of truth. Nel runtime canonico anche `workflowy-roadmap-sync.path` osserva le modifiche locali applicate dal writer e programma subito lo stesso servizio; la nota radice mostra `⏳` finché una proiezione non è stata confermata e resta `✅` solo dopo il completamento.
 
 ## External systems
 
