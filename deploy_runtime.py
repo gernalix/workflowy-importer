@@ -9,7 +9,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parent
 UNIT_SOURCE = ROOT / "deploy" / "systemd"
-UNITS = tuple(sorted(path.name for path in UNIT_SOURCE.iterdir() if path.suffix in {".service", ".timer"}))
+UNITS = tuple(sorted(path.name for path in UNIT_SOURCE.iterdir() if path.suffix in {".service", ".timer", ".path"}))
 CORE_UNITS = (
     "workflowy-bridge.service",
     "workflowy-roadmap-sync.timer",
