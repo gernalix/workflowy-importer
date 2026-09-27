@@ -24,9 +24,30 @@ SCOPE_PREFIX = '__manual_scope__:'
 RESET_PREFIX = '__manual_reset__:'
 MIRROR_PREFIX = '__dag_mirror__:'
 ISSUE_DETAIL_PREFIX = 'issue-inbox-detail:'
+FOCUS_ROOT_KEY = '__human_focus__'
+FOCUS_PREFIX = '__human_focus_item__:'
+FOCUS_LIMIT = 20
 PROJECTION_VERSION = 3
 DEFAULT_ORDER_HELPER: Path | None = None
 ROOT_SOURCE = 'Checklist 2.0 · le viste canoniche C2 sono la fonte autoritativa.'
+
+def _human_copy_map(conn: sqlite3.Connection, entity_kind: str) -> dict[str, dict]:
+    marker = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='c2_human_copy'"
+    ).fetchone()
+    if not marker:
+        return {}
+    return {
+        str(row['entity_id']): dict(row)
+        for row in conn.execute(
+            "SELECT * FROM c2_human_copy WHERE entity_kind=?", (entity_kind,)
+        )
+    }
+
+def _focus_items(items: list[dict]) -> list[dict]:
+    running = [item for item in items if item.get('group') == 'running']
+    ready = [item for item in items if item.get('group') == 'ready']
+    return (running + ready)[:FOCUS_LIMIT]
 
 
 def read_items(raw: bytes) -> list[dict] | None:
@@ -59,6 +80,9 @@ def read_items(raw: bytes) -> list[dict] | None:
                         f'{manual_rank_column}, ' if manual_rank_column else '')
         items = [dict(r) for r in conn.execute(f'''SELECT * FROM v_work_item_summary
             ORDER BY {manual_order}COALESCE(sort_order,2147483647),created_at,work_item_id''')]
+        human_copy = _human_copy_map(conn, 'work_item')
+        for item in items:
+            item.update(human_copy.get(str(item['work_item_id']), {}))
         by_id = {r['work_item_id']: r for r in items}
         for item in items:
             key = item['work_item_id']
@@ -122,19 +146,33 @@ def read_issue_inbox(raw: bytes) -> list[dict]:
         ).fetchone()
         if not marker:
             return []
-        return [dict(row) for row in conn.execute(
+        rows = [dict(row) for row in conn.execute(
             'SELECT * FROM v_issue_inbox_pending_ordered')]
+        human_copy = _human_copy_map(conn, 'issue')
+        for row in rows:
+            row.update(human_copy.get(str(row['issue_id']), {}))
+        return rows
 
 
 def item_text(item: dict, links: dict[str, str]) -> tuple[str, str]:
     esc = lambda value: html.escape(str(value or ''), quote=True)
     icon = '✅' if item['status'] in DONE else '👉' if item['status'] == 'running' else '☐'
-    identity = f"[{item['prompt_id']}] " if item['prompt_id'] else ''
-    name = f"{icon} {identity}{esc(item['title'])}"
-    lines = [f"✅ {item['completed_actionable']}/{item['total_actionable']} · {item['progress_percent']:g}%"]
+    display_title = str(item.get('human_title') or item['title'])
+    name = f"{icon} {esc(display_title)}"
+    lines = []
+    if item.get('human_summary'):
+        lines.append(esc(item['human_summary']))
+    lines.append(f"✅ {item['completed_actionable']}/{item['total_actionable']} · {item['progress_percent']:g}%")
     lines.append('C2_ENTITY_ID: ' + esc(item['work_item_id']))
+    if item.get('prompt_id'):
+        lines.append('PROMPT_ID: ' + esc(item['prompt_id']))
+    technical_title = str(item.get('ai_title') or item['title'])
+    if technical_title != display_title:
+        lines.append('Titolo tecnico: ' + esc(technical_title))
     if item.get('objective'):
         lines.append('Cosa fa: ' + esc(item['objective']))
+    if item.get('copy_status') == 'needs_clarification':
+        lines.append('⚠ Titolo umano provvisorio: servono chiarimenti.')
     if item.get('external_owner'):
         lines.append('Gestito da worker esterno PH — non assegnabile da questo supervisor.')
     execution = item.get('current_execution')
@@ -173,7 +211,6 @@ def item_text(item: dict, links: dict[str, str]) -> tuple[str, str]:
         if dep['work_item_id'] in links:
             lines.append(f'<a href="https://workflowy.com/#/{links[dep["work_item_id"]]}">{esc(dep["title"])}</a>')
     return name, '\n'.join(lines)
-
 
 def _manual_rank(item: dict) -> object | None:
     for key in ('manual_rank', 'manual_order_rank'):
@@ -327,7 +364,7 @@ def _human_tag(prefix: str, value: object) -> str | None:
     return f'#{prefix}-{slug}' if slug else None
 
 
-def _compact_issue_title(description: object, *, limit: int = 52) -> str:
+def _fallback_issue_title(description: object) -> str:
     text = html.unescape(str(description or ''))
     text = re.sub(r'https?://\S+|www\.\S+', ' ', text, flags=re.IGNORECASE)
     text = re.sub(
@@ -341,40 +378,34 @@ def _compact_issue_title(description: object, *, limit: int = 52) -> str:
         r'\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b',
         ' ', text, flags=re.IGNORECASE,
     )
-    text = re.sub(
-        r'^(?:P0\s*[—-]\s*)?(?:LIVE\s+)?(?:regression of completed Workflowy\s*:|'
-        r'(?:Retrospective (?:finding|bottleneck|friction)|Cross-cutting optimization[^:]*)'
-        r'(?: from ChatGPT conversation)?[^:]*:|ChatGPT/RDC diagnostic bug:|'
-        r'ChatGPT RDC supervisor:|Supervisor watcher bootstrap bug:|'
-        r'Amendment to the mass ChatGPT retrospective task\s*\([^)]*\):)\s*',
-        '', text, flags=re.IGNORECASE,
-    )
-    text = re.sub(r'^GitHub capture issue\b.*?\bfor\b\s*(?:is\s+)?', '', text,
-                  flags=re.IGNORECASE)
-    text = re.sub(r'\s+', ' ', text).strip(' \t\r\n-:;,.')
+    text = re.sub(r'\s+', ' ', text).strip(' -:;,.')
     if not text:
-        return 'Issue da triagiare'
-    sentence = re.split(r'(?<=[.!?])\s+', text, maxsplit=1)[0]
-    candidate = sentence if len(sentence) <= limit else text
-    if len(candidate) <= limit:
-        return candidate
-    clipped = candidate[:limit - 1].rsplit(' ', 1)[0].rstrip(' \t\r\n-:;,.)')
-    return (clipped or candidate[:limit - 1]).rstrip() + '…'
-
+        return 'Chiarire questa segnalazione'
+    sentence = re.split(r'(?<=[.!?])\s+', text, maxsplit=1)[0].strip()
+    return sentence or text
 
 def issue_text(issue: dict) -> tuple[str, str]:
     tags = [
         _human_tag('repo', issue.get('repo')),
         _human_tag('executor', issue.get('executor')),
     ]
-    note = ' · '.join(tag for tag in tags if tag)
-    return '☐ ' + html.escape(_compact_issue_title(issue.get('description')), quote=True), note
-
+    lines = []
+    if issue.get('human_summary'):
+        lines.append(html.escape(str(issue['human_summary']), quote=True))
+    tags_line = ' · '.join(tag for tag in tags if tag)
+    if tags_line:
+        lines.append(tags_line)
+    title = str(issue.get('human_title') or _fallback_issue_title(issue.get('description')))
+    return '☐ ' + html.escape(title, quote=True), '\n'.join(lines)
 
 def issue_detail_text(issue: dict) -> tuple[str, str]:
-    description = html.escape(str(issue.get('description') or ''), quote=True)
-    return 'Dettagli', description
-
+    lines = []
+    if issue.get('ai_title'):
+        lines.append('Titolo tecnico: ' + html.escape(str(issue['ai_title']), quote=True))
+    if issue.get('copy_status') == 'needs_clarification':
+        lines.append('⚠ Traduzione umana provvisoria: servono chiarimenti.')
+    lines.append('Descrizione tecnica: ' + html.escape(str(issue.get('description') or ''), quote=True))
+    return 'Dettagli tecnici', '\n'.join(lines)
 
 def _semantic_event_key(action: str, scope: str, payload: object) -> str:
     encoded = json.dumps(
@@ -439,11 +470,12 @@ def _sync_items_once(
     )
     issues = issues or []
     nodes = {str(n['id']): n for n in client.export_nodes() if n.get('id')}
-    keys = [ROADMAP_ROOT_KEY]
+    keys = [ROADMAP_ROOT_KEY, FOCUS_ROOT_KEY]
     keys += [SCOPE_PREFIX + scope for scope in ('inbox', 'roadmap')]
     keys += [RESET_PREFIX + scope for scope in ('inbox', 'roadmap')]
     keys += [GROUP_PREFIX + k for k, _ in ROADMAP_SECTIONS]
     keys += ['wi:' + i['work_item_id'] for i in items]
+    keys += [FOCUS_PREFIX + i['work_item_id'] for i in _focus_items(items)]
     keys += ['issue-inbox:' + issue['issue_id'] for issue in issues]
     keys += [ISSUE_DETAIL_PREFIX + issue['issue_id'] for issue in issues]
     keys += ['wi-history:' + i['work_item_id'] for i in items
@@ -500,6 +532,11 @@ def _sync_items_once(
         key: sum(1 for item in items if item['group'] == key)
         for key, _label in ROADMAP_SECTIONS
     }
+    focus_candidates = _focus_items(items)
+    focus_root = put(
+        FOCUS_ROOT_KEY, root, '⭐ Focus',
+        f'{len(focus_candidates)} attività: prima ciò che è già in corso, poi i prossimi task realmente eseguibili. '
+        'La struttura tecnica completa resta sotto Roadmap.', 'h2')
     scope_ids = {
         'inbox': put(SCOPE_PREFIX+'inbox', root, 'Inbox execution order',
                      f'{len(issues)} issue canoniche pending. Ordine manuale dell’inbox; '
@@ -575,6 +612,40 @@ def _sync_items_once(
                 'entity_id': issue['issue_id'],
             },
         )
+
+    focus_links = {}
+    current_focus_ids = {item['work_item_id'] for item in focus_candidates}
+    mapped_focus = [str(row['external_key']) for row in db.execute(
+        "SELECT external_key FROM mappings WHERE namespace=? AND external_key LIKE ?",
+        (ROADMAP_NAMESPACE, FOCUS_PREFIX + '%'),
+    )]
+    for key in mapped_focus:
+        entity_id = key.removeprefix(FOCUS_PREFIX)
+        if entity_id in current_focus_ids:
+            continue
+        mapped = _mapping_get(db, key)
+        if mapped and mapped[0] in nodes:
+            client.delete_node(mapped[0])
+            nodes.pop(mapped[0], None)
+            counts['deleted'] += 1
+        db.execute('DELETE FROM mappings WHERE namespace=? AND external_key=?',
+                   (ROADMAP_NAMESPACE, key))
+        db.commit()
+    for item in focus_candidates:
+        display_title = html.escape(str(item.get('human_title') or item['title']), quote=True)
+        icon = '👉' if item['status'] == 'running' else '☐'
+        summary = html.escape(str(item.get('human_summary') or item.get('objective') or
+                                  'Task C2 pronto per essere eseguito.'), quote=True)
+        canonical = links[item['work_item_id']]
+        note = (summary + '\n' +
+                f'<a href="https://workflowy.com/#/{canonical}">Apri task canonico</a> · ' +
+                html.escape(str(item['status']), quote=True))
+        focus_links[item['work_item_id']] = put(
+            FOCUS_PREFIX + item['work_item_id'], focus_root,
+            f'{icon} {display_title}', note, metadata={
+                'entity_kind': 'focus_work_item',
+                'entity_id': item['work_item_id'],
+            })
 
     expected_parents: dict[str, str] = {}
     by_item = {item['work_item_id']: item for item in items}
@@ -754,6 +825,7 @@ def _sync_items_once(
             counts['moved'] += 1
 
     sequences: dict[str, list[str]] = {
+        focus_root: [focus_links[item['work_item_id']] for item in focus_candidates],
         scope_ids['inbox']: [reset_ids['inbox'], *[
             issue_links[issue['issue_id']] for issue in ordered_issues]],
         scope_ids['roadmap']: [reset_ids['roadmap'], *groups.values()],

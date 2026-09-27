@@ -228,8 +228,8 @@ class ProjectionTests(unittest.TestCase):
         self.assertNotIn('issue:two', visible[0]['note'])
         self.assertIn('#repo-b', visible[0]['note'])
         detail = next(n for n in client.nodes
-                      if n.get('parent_id') == visible[0]['id'] and n['name'] == 'Dettagli')
-        self.assertEqual('Second issue', detail['note'])
+                      if n.get('parent_id') == visible[0]['id'] and n['name'] == 'Dettagli tecnici')
+        self.assertEqual('Descrizione tecnica: Second issue', detail['note'])
 
     def test_inbox_title_is_compact_and_full_description_is_expandable(self):
         client = FakeClient()
@@ -247,18 +247,19 @@ class ProjectionTests(unittest.TestCase):
             sync_items(client, db, [], issues=[row], parent='inbox')
             top = next(n for n in client.nodes if n['name'].startswith('☐ '))
             detail = next(n for n in client.nodes
-                          if n.get('parent_id') == top['id'] and n['name'] == 'Dettagli')
+                          if n.get('parent_id') == top['id'] and n['name'] == 'Dettagli tecnici')
             mapping = db.execute(
                 "SELECT metadata_json FROM mappings WHERE external_key=?",
                 ('issue-inbox:issue:private-id',),
             ).fetchone()
-        self.assertLessEqual(len(top['name']), 54)
+        self.assertNotIn('…', top['name'])
+        self.assertNotIn('...', top['name'])
         for technical in ('C2_ISSUE_ID', 'issue:secret', 'private-id', 'https://'):
             self.assertNotIn(technical, top['name'])
             self.assertNotIn(technical, top['note'])
         self.assertEqual('#repo-workflowy-importer · #executor-codex', top['note'])
         self.assertNotIn('descrizione completa', top['note'])
-        self.assertEqual(description, detail['note'])
+        self.assertEqual('Descrizione tecnica: ' + description, detail['note'])
         self.assertIn('issue:private-id', mapping['metadata_json'])
 
         technical = issue(
@@ -346,7 +347,7 @@ class ProjectionTests(unittest.TestCase):
         }
         for entity_id, group_name in expected.items():
             projected = next(n for n in client.nodes
-                             if n['name'].endswith(' ' + entity_id))
+                             if ('C2_ENTITY_ID: ' + entity_id) in str(n.get('note') or ''))
             parent_node = next(n for n in client.nodes if n['id'] == projected['parent_id'])
             self.assertEqual(group_name, parent_node['name'])
             self.assertIn('1 work item canonici', parent_node['note'])
@@ -782,9 +783,9 @@ class ProjectionTests(unittest.TestCase):
                 client, db, [changed_dependency, changed_target], parent='inbox',
                 manual_order_adapter=adapter,
             )
-        target_node = next(n for n in client.nodes if n['name'].endswith(' target'))
+        target_node = next(n for n in client.nodes if 'C2_ENTITY_ID: target' in str(n.get('note') or ''))
         target_parent = next(n for n in client.nodes if n['id'] == target_node['parent_id'])
-        dependency_node = next(n for n in client.nodes if n['name'].endswith(' Dependency'))
+        dependency_node = next(n for n in client.nodes if 'C2_ENTITY_ID: dependency' in str(n.get('note') or ''))
         dependency_parent = next(
             n for n in client.nodes if n['id'] == dependency_node['parent_id'])
         self.assertEqual('Ready', target_parent['name'])
@@ -921,3 +922,58 @@ class ProjectionTests(unittest.TestCase):
             conn.execute('ALTER TABLE work_items ADD COLUMN title TEXT')
             with self.assertRaisesRegex(ValueError, 'invalid_work_item_hierarchy'):
                 read_items(conn.serialize())
+
+
+class HumanPresentationTests(unittest.TestCase):
+    def test_human_copy_is_default_and_technical_title_stays_in_details(self):
+        human = item(
+            'human', title='Fix request-key idempotency after lease renewal',
+            human_title='Evita che il rinnovo del supervisore blocchi la C2',
+            ai_title='Fix request-key idempotency after lease renewal',
+            human_summary='Il rinnovo può riusare una chiave già usata. Il recupero deve continuare senza bloccare i sync.',
+        )
+        name, note = item_text(human, {})
+        self.assertEqual('☐ Evita che il rinnovo del supervisore blocchi la C2', name)
+        self.assertIn('Il rinnovo può riusare una chiave già usata.', note)
+        self.assertIn('Titolo tecnico: Fix request-key idempotency after lease renewal', note)
+
+        human_issue = issue(
+            'issue:human',
+            description='Technical low-level description with implementation identifiers',
+            human_title='Sistema il sync quando scade il supervisore',
+            ai_title='Workflowy sync supervisor lease expiry recovery failure',
+            human_summary='Il sync deve ripartire da solo dopo il rinnovo del supervisore.',
+        )
+        title, summary = issue_text(human_issue)
+        detail_name, detail = __import__(
+            'workflowy_importer.work_items_projection', fromlist=['issue_detail_text']
+        ).issue_detail_text(human_issue)
+        self.assertEqual('☐ Sistema il sync quando scade il supervisore', title)
+        self.assertIn('Il sync deve ripartire da solo', summary)
+        self.assertEqual('Dettagli tecnici', detail_name)
+        self.assertIn('Workflowy sync supervisor lease expiry recovery failure', detail)
+
+    def test_fallback_title_never_adds_ellipsis(self):
+        title, _ = issue_text(issue(
+            'issue:long-fallback',
+            description='A very long but still meaningful issue title without a sentence terminator ' + ('detail ' * 40),
+        ))
+        self.assertNotIn('…', title)
+        self.assertNotIn('...', title)
+
+    def test_focus_contains_running_then_ready_but_not_waiting(self):
+        client = FakeClient()
+        rows = [
+            item('ready-one', group='ready'),
+            item('waiting-one', group='waiting', execution_configured=False),
+            item('running-one', group='running', status='running'),
+        ]
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, rows, parent='inbox')
+        focus = next(n for n in client.nodes if n['name'] == '⭐ Focus')
+        visible = [
+            n['name'] for n in client.nodes
+            if n.get('parent_id') == focus['id']
+        ]
+        self.assertEqual(['👉 running-one', '☐ ready-one'], visible)
+        self.assertNotIn('waiting-one', ' '.join(visible))
