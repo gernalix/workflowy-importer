@@ -76,14 +76,35 @@ class RoadmapSyncPreflightTests(unittest.TestCase):
 
     @patch.object(roadmap_sync_preflight.subprocess, 'run')
     def test_recovery_failure_fails_service(self, run):
-        for result in (
-            Mock(returncode=2, stdout=json.dumps({'outcome': 'BLOCKED',
-                                                   'reason': 'pointer_blocker'})),
-            Mock(returncode=0, stdout='not-json'),
+        run.return_value = Mock(returncode=2, stdout=json.dumps({
+            'outcome': 'BLOCKED', 'reason': 'pointer_blocker',
+        }))
+        with redirect_stderr(StringIO()):
+            self.assertEqual(255, roadmap_sync_preflight.main())
+
+    @patch.object(roadmap_sync_preflight.subprocess, 'run')
+    def test_unhandled_recovery_exception_defers_without_exposing_details(self, run):
+        run.return_value = Mock(
+            returncode=1, stdout='',
+            stderr=('Traceback (most recent call last):\n'
+                    'submit_mutation.MutationSubmitError: gh_failed:private detail\n'),
+        )
+        with redirect_stderr(StringIO()) as output:
+            self.assertEqual(1, roadmap_sync_preflight.main())
+        self.assertEqual('c2_supervisor_resume_retry:MutationSubmitError:gh_failed\n',
+                         output.getvalue())
+
+    @patch.object(roadmap_sync_preflight.subprocess, 'run')
+    def test_invalid_recovery_output_defers_without_sync(self, run):
+        for stdout, expected in (
+            ('not-json', 'c2_supervisor_resume_retry:unknown\n'),
+            ('[]', 'c2_supervisor_resume_retry:invalid_shape\n'),
         ):
-            with self.subTest(result=result), redirect_stderr(StringIO()):
-                run.return_value = result
-                self.assertEqual(255, roadmap_sync_preflight.main())
+            with self.subTest(stdout=stdout):
+                run.return_value = Mock(returncode=0, stdout=stdout, stderr='')
+                with redirect_stderr(StringIO()) as output:
+                    self.assertEqual(1, roadmap_sync_preflight.main())
+                self.assertEqual(expected, output.getvalue())
 
 
 if __name__ == '__main__':
