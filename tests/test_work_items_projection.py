@@ -526,6 +526,75 @@ class ProjectionTests(unittest.TestCase):
             source_modified_at='1790000000')
         self.assertNotIn('work-item', adapter.call_args.kwargs['ordered_ids'])
 
+    def test_inbox_reorder_survives_failed_submission_and_membership_change(self):
+        client = FakeClient()
+        adapter = Mock(side_effect=[RuntimeError('supervisor_lease_lost'), {'status': 'ok'}])
+        initial = [
+            issue('issue:a', description='A', observed_at_ms=1),
+            issue('issue:b', description='B', observed_at_ms=2),
+            issue('issue:c', description='C', observed_at_ms=3),
+        ]
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, [], issues=initial, parent='inbox',
+                       manual_order_adapter=adapter)
+            inbox = next(n for n in client.nodes if n['name'] == 'Inbox execution order')
+            first = next(n for n in client.nodes if n['name'] == '☐ A')
+            client.move_node(first['id'], inbox['id'], position='bottom')
+
+            changed = [
+                initial[0], initial[1],
+                issue('issue:d', description='D', observed_at_ms=4),
+            ]
+            with self.assertRaisesRegex(RuntimeError, 'supervisor_lease_lost'):
+                sync_items(client, db, [], issues=changed, parent='inbox',
+                           manual_order_adapter=adapter)
+
+            result = sync_items(client, db, [], issues=changed, parent='inbox',
+                                manual_order_adapter=adapter)
+            visible = [
+                n['name'].removeprefix('☐ ') for n in client.nodes
+                if n.get('parent_id') == inbox['id'] and n['name'].startswith('☐ ')
+            ]
+
+        self.assertEqual(1, result['mutations_submitted'])
+        self.assertEqual(2, adapter.call_count)
+        self.assertEqual(
+            ['issue:b', 'issue:a', 'issue:d'],
+            adapter.call_args.kwargs['ordered_ids'],
+        )
+        self.assertEqual(['B', 'A', 'D'], visible)
+
+    def test_inbox_membership_change_alone_is_rendered_without_echo(self):
+        client = FakeClient()
+        adapter = Mock(return_value={'status': 'ok'})
+        initial = [
+            issue('issue:a', description='A', observed_at_ms=1),
+            issue('issue:c', description='C', observed_at_ms=3),
+        ]
+        changed = [
+            issue('issue:a', description='A', observed_at_ms=1),
+            issue('issue:b', description='B', observed_at_ms=2),
+            issue('issue:c', description='C', observed_at_ms=3),
+        ]
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, [], issues=initial, parent='inbox',
+                       manual_order_adapter=adapter)
+            first = sync_items(client, db, [], issues=changed, parent='inbox',
+                               manual_order_adapter=adapter)
+            second = sync_items(client, db, [], issues=changed, parent='inbox',
+                                manual_order_adapter=adapter)
+            inbox = next(n for n in client.nodes if n['name'] == 'Inbox execution order')
+            visible = [
+                n['name'].removeprefix('☐ ') for n in client.nodes
+                if n.get('parent_id') == inbox['id'] and n['name'].startswith('☐ ')
+            ]
+
+        self.assertGreater(first['moved'], 0)
+        self.assertEqual(0, second['moved'])
+        self.assertEqual((0, 0), (first['mutations_submitted'], second['mutations_submitted']))
+        adapter.assert_not_called()
+        self.assertEqual(['A', 'B', 'C'], visible)
+
     def test_renderer_refresh_changes_order_without_echo_mutation(self):
         client = FakeClient()
         adapter = Mock(return_value={'status':'ok'})
@@ -563,7 +632,7 @@ class ProjectionTests(unittest.TestCase):
                                 manual_order_adapter=adapter)
             self.assertEqual(1, result['mutations_submitted'])
             adapter.assert_called_once_with(
-                'clear', scope='roadmap', ordered_ids=['one'])
+                'clear', scope='roadmap', ordered_ids=None)
             fresh = next(n for n in client.nodes if n['name'] == 'Reset to AI order'
                          and next(p for p in client.nodes if p['id'] == n['parent_id'])['name'] == 'Roadmap')
             self.assertNotEqual(old_reset_id, fresh['id'])
@@ -637,9 +706,9 @@ class ProjectionTests(unittest.TestCase):
         self.assertNotIn('force_ai', metadata)
         self.assertNotIn('force_ai_stable_count', metadata)
 
-    def test_repeated_reset_without_override_is_consumed_as_safe_noop(self):
+    def test_repeated_reset_without_visible_override_still_clears_scope(self):
         client = FakeClient()
-        adapter = Mock(side_effect=AssertionError('backend clear must not run'))
+        adapter = Mock(return_value={'status': 'ok'})
         with closing(connect(':memory:')) as db:
             sync_items(client, db, [item('one')], parent='inbox',
                        manual_order_adapter=adapter)
@@ -657,8 +726,11 @@ class ProjectionTests(unittest.TestCase):
             fresh['completed'] = True
             second = sync_items(client, db, [item('one')], parent='inbox',
                                 manual_order_adapter=adapter)
-        self.assertEqual((0, 0), (first['mutations_submitted'], second['mutations_submitted']))
-        adapter.assert_not_called()
+        self.assertEqual((1, 1), (first['mutations_submitted'], second['mutations_submitted']))
+        self.assertEqual(2, adapter.call_count)
+        for call in adapter.call_args_list:
+            self.assertEqual(('clear',), call.args)
+            self.assertEqual({'scope': 'roadmap', 'ordered_ids': None}, call.kwargs)
 
     def test_distinct_reset_nodes_resubmit_same_override_with_distinct_local_events(self):
         client = FakeClient()
