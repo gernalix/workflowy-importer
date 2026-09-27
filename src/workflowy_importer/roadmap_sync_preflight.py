@@ -3,12 +3,24 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
 
 
 RESUME = Path('/home/daniele/projects/codex-roadmap/tools/c2_supervisor_resume.py')
+
+
+def _error_category(stderr: str | None) -> str:
+    """Keep a useful exception category without logging GitHub error details."""
+    if not isinstance(stderr, str):
+        return 'unknown'
+    last = stderr.strip().splitlines()[-1:]
+    if not last:
+        return 'unknown'
+    match = re.match(r'(?:[\w.]+\.)?([A-Za-z_]+Error): ([a-z_]+)', last[0])
+    return ':'.join(match.groups()) if match else 'unknown'
 
 
 def local_lease_matches(state: dict) -> bool:
@@ -33,13 +45,21 @@ def main() -> int:
     try:
         state = json.loads(result.stdout)
     except json.JSONDecodeError:
-        print('c2_supervisor_resume_invalid_result', file=sys.stderr)
-        return 255
+        print('c2_supervisor_resume_retry:' + _error_category(result.stderr),
+              file=sys.stderr)
+        return 1
+    if not isinstance(state, dict):
+        print('c2_supervisor_resume_retry:invalid_shape', file=sys.stderr)
+        return 1
     outcome = state.get('outcome')
-    if result.returncode or outcome == 'BLOCKED':
+    if outcome == 'BLOCKED':
         print('c2_supervisor_resume_blocked:' + str(state.get('reason', outcome)),
               file=sys.stderr)
         return 255
+    if result.returncode:
+        print('c2_supervisor_resume_retry:' + _error_category(result.stderr),
+              file=sys.stderr)
+        return 1
     if (outcome == 'ALREADY_ACTIVE'
             and state.get('phase') != 'canonical_successor'
             and local_lease_matches(state)):
