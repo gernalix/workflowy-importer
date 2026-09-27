@@ -661,7 +661,8 @@ def _sync_items_once(
             state['force_ai'] = True
         elif parent_changed:
             warnings += 1
-        elif (state_is_current and isinstance(last_order, list)
+        elif (not state.get('force_ai')
+              and state_is_current and isinstance(last_order, list)
               and set(current_order) == set(last_order)
               and current_order != last_order):
             modified = str(_source_modified_at(nodes, order_canonical))
