@@ -143,6 +143,19 @@ class ProjectionTests(unittest.TestCase):
             self.assertEqual(task['id'],history['parent_id'])
             self.assertIn('chatgpt · failed · 10',history['note'])
             self.assertIn('https://chatgpt.com/c/old',history['note'])
+    def test_recent_pending_intake_is_visible_once_without_becoming_ready(self):
+        client = FakeClient()
+        recent = item('new', group='intake', execution_configured=False)
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, [recent], parent='inbox')
+            intake = next(n for n in client.nodes if n['name'] == 'NUOVO INTAKE · IN ATTESA')
+            projected = [n for n in client.nodes if n['name'].startswith('☐ new')]
+            self.assertEqual(1, len(projected))
+            self.assertEqual(intake['id'], projected[0]['parent_id'])
+            self.assertIn('mancano dati di esecuzione', projected[0]['note'])
+            self.assertNotIn(projected[0]['id'], [
+                n['id'] for n in client.nodes if n['parent_id'] != intake['id']
+            ])
 
     def test_legacy_action_groups_move_under_archive(self):
         from workflowy_importer.roadmap_bridge import _mapping_set, GROUP_PREFIX, ROADMAP_ROOT_KEY

@@ -9,10 +9,23 @@ import sqlite3
 
 GROUPS = (
     ('running', 'IN CORSO'), ('ready', 'PRONTI'),
+    ('intake', 'NUOVO INTAKE · IN ATTESA'),
     ('waiting', 'IN ATTESA'), ('blocked', 'BLOCCATI / NEEDS FIX'),
     ('completed', 'COMPLETATI RECENTEMENTE'), ('archive', 'Archivio'),
 )
 DONE = {'completed', 'waived', 'cancelled', 'superseded'}
+INTAKE_WINDOW = timedelta(days=14)
+
+
+def is_recent_intake(item: dict) -> bool:
+    """New pending work stays visible without changing its waiting state."""
+    try:
+        created = datetime.fromisoformat(str(item.get('created_at')).replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return False
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return created >= datetime.now(timezone.utc) - INTAKE_WINDOW
 
 
 def read_items(raw: bytes) -> list[dict] | None:
@@ -65,7 +78,8 @@ def read_items(raw: bytes) -> list[dict] | None:
                 ('completed' if recent else 'archive') if status in {'completed','waived'} else
                 'archive' if status in {'cancelled','superseded','unknown'} else
                 'blocked' if status in {'failed','blocked','needs_fix'} else
-                'ready' if key in ready else 'waiting')
+                'ready' if key in ready else
+                'intake' if is_recent_intake(item) else 'waiting')
             # Reject malformed trees before any remote change.
             seen = {key}
             parent = item['parent_id']
@@ -112,7 +126,7 @@ def item_text(item: dict, links: dict[str, str]) -> tuple[str, str]:
         lines.append('In attesa di: ' + ', '.join(esc(d['title']) for d in waiting))
     elif item['executor_policy'] == 'human' and item['status'] not in DONE:
         lines.append('In attesa di un intervento umano.')
-    elif item['group'] == 'waiting' and not item['blocker'] and not item.get('external_owner'):
+    elif item['group'] in {'intake', 'waiting'} and not item['blocker'] and not item.get('external_owner'):
         lines.append('In attesa: mancano dati di esecuzione.' if item.get('execution_configured') is False
                      else 'In attesa di una dipendenza o risorsa disponibile.')
     project_tag = '#progetto-' + re.sub(r'[^a-z0-9]+', '-', str(item['project_name'] or '').lower()).strip('-')
