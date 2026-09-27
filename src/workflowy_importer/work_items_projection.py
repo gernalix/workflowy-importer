@@ -662,15 +662,15 @@ def _sync_items_once(
                 'SELECT 1 FROM events WHERE source=? AND external_key=?',
                 ('workflowy_manual_order', request_key),
             ).fetchone()
-            if overrides and not already_submitted:
-                manual_order_adapter(
-                    'clear', scope=scope,
-                    ordered_ids=[entry['entity_id'] for entry in overrides],
-                )
+            if not already_submitted:
+                # Reset is scope-wide by definition. Clearing only currently
+                # visible/ranked entities leaves stale overrides behind when an
+                # issue or work item has already exited the projected scope.
+                manual_order_adapter('clear', scope=scope, ordered_ids=None)
                 db.execute('INSERT INTO events(source,external_key,payload_json) VALUES(?,?,?)',
                            ('workflowy_manual_order', request_key,
                             json.dumps({'scope': scope, 'action': 'clear',
-                                        'overrides': overrides}, sort_keys=True)))
+                                        'reset_event': reset_event}, sort_keys=True)))
                 db.commit()
                 mutations_submitted += 1
             client.delete_node(reset_ids[scope])
@@ -679,12 +679,12 @@ def _sync_items_once(
                                    'Completa questa azione per rimuovere l’ordine manuale dello scope.',
                                    'todo', metadata={'reset_generation': request_key})
             state.pop('pending_order', None)
-            if overrides:
-                state['force_ai'] = True
-                state['force_ai_stable_count'] = 0
-            else:
-                state.pop('force_ai', None)
-                state.pop('force_ai_stable_count', None)
+            # Hold AI rendering through the canonical acknowledgement window
+            # even when no currently visible row is ranked: a scope-wide reset
+            # may be removing stale overrides for entities that already left
+            # the projected scope.
+            state['force_ai'] = True
+            state['force_ai_stable_count'] = 0
         elif parent_changed:
             warnings += 1
         elif (not state.get('force_ai')
