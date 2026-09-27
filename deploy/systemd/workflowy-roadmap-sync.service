@@ -7,6 +7,7 @@ Type=oneshot
 WorkingDirectory=%h/projects/workflowy-importer
 Environment=PYTHONPATH=%h/projects/workflowy-importer/src
 LoadCredential=telegram.env:%h/.config/codex/secrets/telegram.env
-ExecStart=/usr/bin/python3 -m workflowy_importer.bridge_cli roadmap-sync
 NoNewPrivileges=true
 PrivateTmp=true
+ExecCondition=/usr/bin/python3 -m workflowy_importer.roadmap_sync_preflight
+ExecStart=/usr/bin/python3 -m workflowy_importer.bridge_cli roadmap-sync
