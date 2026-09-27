@@ -252,12 +252,12 @@ class ProjectionTests(unittest.TestCase):
                 "SELECT metadata_json FROM mappings WHERE external_key=?",
                 ('issue-inbox:issue:private-id',),
             ).fetchone()
-        self.assertLessEqual(len(top['name']), 90)
+        self.assertLessEqual(len(top['name']), 54)
         for technical in ('C2_ISSUE_ID', 'issue:secret', 'private-id', 'https://'):
             self.assertNotIn(technical, top['name'])
             self.assertNotIn(technical, top['note'])
-        self.assertIn('#repo-workflowy-importer', top['note'])
-        self.assertIn('#executor-codex', top['note'])
+        self.assertEqual('#repo-workflowy-importer · #executor-codex', top['note'])
+        self.assertNotIn('descrizione completa', top['note'])
         self.assertEqual(description, detail['note'])
         self.assertIn('issue:private-id', mapping['metadata_json'])
 
@@ -447,6 +447,64 @@ class ProjectionTests(unittest.TestCase):
                                manual_order_adapter=adapter)
             self.assertEqual(0, again['mutations_submitted'])
             self.assertEqual(1, adapter.call_count)
+
+    def test_waiting_reorder_nested_by_drag_is_captured_and_flattened_without_rollback(self):
+        client = FakeClient()
+        adapter = Mock(return_value={'status': 'ok'})
+        rows = [
+            item('one', group='waiting', sort_order=1),
+            item('two', group='waiting', sort_order=2),
+            item('three', group='waiting', sort_order=3),
+        ]
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, rows, parent='inbox', manual_order_adapter=adapter)
+            waiting = next(n for n in client.nodes if n['name'] == 'Waiting')
+            one = next(n for n in client.nodes if n['name'].startswith('☐ one'))
+            two = next(n for n in client.nodes if n['name'].startswith('☐ two'))
+            # Workflowy can transiently express a drag as nesting under the
+            # adjacent task rather than as a flat sibling move.
+            client.move_node(one['id'], two['id'], position='top')
+            result = sync_items(client, db, rows, parent='inbox', manual_order_adapter=adapter)
+            visible = [
+                n['name'].split()[-1] for n in client.nodes
+                if n.get('parent_id') == waiting['id'] and n['name'].startswith('☐')
+            ]
+        self.assertEqual(1, result['mutations_submitted'])
+        self.assertEqual(0, result['warnings'])
+        self.assertLessEqual(result['moved'], 2)
+        adapter.assert_called_once_with(
+            'set', scope='roadmap', ordered_ids=['two', 'one', 'three'],
+            source_modified_at='1790000000',
+        )
+        self.assertEqual(['two', 'one', 'three'], visible)
+
+    def test_waiting_nested_drag_is_order_intent_and_is_flattened_stably(self):
+        client = FakeClient()
+        adapter = Mock(return_value={'status': 'ok'})
+        rows = [
+            item('one', group='waiting', sort_order=1),
+            item('two', group='waiting', sort_order=2),
+            item('three', group='waiting', sort_order=3),
+        ]
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, rows, parent='inbox', manual_order_adapter=adapter)
+            waiting = next(n for n in client.nodes if n['name'] == 'Waiting')
+            one = next(n for n in client.nodes if n['name'].startswith('☐ one'))
+            three = next(n for n in client.nodes if n['name'].startswith('☐ three'))
+            # Workflowy can encode a visual drag as temporary nesting under a
+            # sibling. The visible DFS order is one,three,two and must be
+            # captured rather than rejected as a lifecycle-parent change.
+            client.move_node(three['id'], one['id'], position='top')
+            result = sync_items(client, db, rows, parent='inbox', manual_order_adapter=adapter)
+            visible = [n['name'].split()[-1] for n in client.nodes
+                       if n.get('parent_id') == waiting['id'] and n['name'].startswith('☐')]
+        self.assertEqual(0, result['warnings'])
+        self.assertEqual(1, result['mutations_submitted'])
+        adapter.assert_called_once_with(
+            'set', scope='roadmap', ordered_ids=['one', 'three', 'two'],
+            source_modified_at='1790000000')
+        self.assertEqual(['one', 'three', 'two'], visible)
+        self.assertLessEqual(result['moved'], 3)
 
     def test_issue_inbox_reorder_sends_only_real_issue_ids(self):
         client = FakeClient()
