@@ -22,8 +22,10 @@ DONE = {'completed', 'waived', 'cancelled', 'superseded'}
 SCOPE_PREFIX = '__manual_scope__:'
 RESET_PREFIX = '__manual_reset__:'
 MIRROR_PREFIX = '__dag_mirror__:'
-PROJECTION_VERSION = 1
-DEFAULT_ORDER_HELPER = Path('/home/daniele/projects/codex-roadmap/tools/c2_workflowy_order.py')
+ISSUE_DETAIL_PREFIX = 'issue-inbox-detail:'
+PROJECTION_VERSION = 2
+DEFAULT_ORDER_HELPER: Path | None = None
+ROOT_SOURCE = 'Checklist 2.0 · le viste canoniche C2 sono la fonte autoritativa.'
 
 
 def read_items(raw: bytes) -> list[dict] | None:
@@ -251,21 +253,64 @@ def _source_modified_at(nodes: dict[str, dict], canonical: dict[str, str]) -> ob
         return max(values, key=lambda value: str(value))
 
 
+def _human_tag(prefix: str, value: object) -> str | None:
+    text = str(value or '').strip().rstrip('/').removesuffix('.git')
+    if not text:
+        return None
+    if prefix == 'repo':
+        text = text.rsplit('/', 1)[-1]
+    slug = re.sub(r'[^a-z0-9]+', '-', text.casefold()).strip('-')
+    return f'#{prefix}-{slug}' if slug else None
+
+
+def _compact_issue_title(description: object, *, limit: int = 88) -> str:
+    text = html.unescape(str(description or ''))
+    text = re.sub(r'https?://\S+|www\.\S+', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(
+        r'\b(?:C2_[A-Z0-9_]+|PROMPT_ID|RUN_ID|WORK_ITEM_ID)\s*[:=]\s*\S+',
+        ' ', text, flags=re.IGNORECASE,
+    )
+    text = re.sub(r'\b(?:wi|issue|run|prompt|task):[A-Za-z0-9_.:-]+', ' ', text,
+                  flags=re.IGNORECASE)
+    text = re.sub(r'(?<!\w)#\d+\b', ' ', text)
+    text = re.sub(
+        r'\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b',
+        ' ', text, flags=re.IGNORECASE,
+    )
+    text = re.sub(r'\s+', ' ', text).strip(' \t\r\n-:;,.')
+    if not text:
+        return 'Issue da triagiare'
+    sentence = re.split(r'(?<=[.!?])\s+', text, maxsplit=1)[0]
+    candidate = sentence if len(sentence) <= limit else text
+    if len(candidate) <= limit:
+        return candidate
+    clipped = candidate[:limit - 1].rsplit(' ', 1)[0].rstrip(' \t\r\n-:;,.)')
+    return (clipped or candidate[:limit - 1]).rstrip() + '…'
+
+
 def issue_text(issue: dict) -> tuple[str, str]:
-    issue_id = html.escape(str(issue['issue_id']), quote=True)
+    tags = [
+        _human_tag('repo', issue.get('repo')),
+        _human_tag('executor', issue.get('executor')),
+    ]
+    note = 'Espandi il figlio Dettagli per la descrizione completa.'
+    human_tags = ' · '.join(tag for tag in tags if tag)
+    if human_tags:
+        note += '\n' + human_tags
+    return '☐ ' + html.escape(_compact_issue_title(issue.get('description')), quote=True), note
+
+
+def issue_detail_text(issue: dict) -> tuple[str, str]:
     description = html.escape(str(issue.get('description') or ''), quote=True)
-    name = '☐ ' + description
-    lines = ['C2_ISSUE_ID:' + issue_id, 'Description: ' + description]
-    if issue.get('repo'):
-        lines.append('Repo: ' + html.escape(str(issue['repo']), quote=True))
-    if _manual_rank(issue) is not None:
-        lines.append('Manual rank: ' + html.escape(str(_manual_rank(issue)), quote=True))
-    if _manual_source(issue) is not None:
-        lines.append('Manual source: ' + html.escape(str(_manual_source(issue)), quote=True))
-    source_modified = issue.get('manual_order_source_modified_at')
-    if source_modified is not None:
-        lines.append('Manual source modified: ' + html.escape(str(source_modified), quote=True))
-    return name, '\n'.join(lines)
+    return 'Dettagli', description
+
+
+def _semantic_event_key(action: str, scope: str, payload: object) -> str:
+    encoded = json.dumps(
+        {'action': action, 'scope': scope, 'payload': payload},
+        ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+    ).encode()
+    return f'workflowy-{action}-manual-order-{scope}-' + hashlib.sha256(encoded).hexdigest()[:24]
 
 
 def run_manual_order_adapter(
@@ -274,12 +319,19 @@ def run_manual_order_adapter(
     scope: str,
     ordered_ids: list[str] | None = None,
     source_modified_at: str | None = None,
-    helper: Path = DEFAULT_ORDER_HELPER,
+    request_token: str | None = None,
+    helper: Path | None = DEFAULT_ORDER_HELPER,
 ) -> dict:
     """Invoke the fenced backend helper; never construct a mutation document here."""
     if action not in {'set', 'clear'}:
         raise ValueError('invalid_manual_order_action')
-    argv = [sys.executable, str(helper), action, '--scope', scope]
+    argv = ([sys.executable, str(helper)] if helper else
+            [sys.executable, '-m', 'workflowy_importer.manual_order_control'])
+    argv += [action, '--scope', scope]
+    if request_token:
+        if helper:
+            raise ValueError('legacy_manual_order_helper_has_no_request_token')
+        argv += ['--request-token', request_token]
     if action == 'set':
         if ordered_ids is None or source_modified_at is None:
             raise ValueError('manual_order_set_arguments_required')
@@ -289,18 +341,21 @@ def run_manual_order_adapter(
     proc = subprocess.run(argv, text=True, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, check=False)
     if proc.returncode:
+        detail = proc.stderr.strip() or proc.stdout.strip()
+        if 'request_key_conflict:' in detail:
+            return {'status': 'ok', 'idempotent': True, 'outcome': 'already_applied'}
         raise RuntimeError(
-            'workflowy_order_helper_failed:' + (proc.stderr.strip() or proc.stdout.strip()))
+            'workflowy_order_helper_failed:' + detail)
     try:
         result = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
         raise RuntimeError('workflowy_order_helper_invalid_response') from exc
-    if not isinstance(result, dict) or result.get('status') != 'ok':
+    if not isinstance(result, dict) or result.get('status') not in {'ok', 'queued'}:
         raise RuntimeError(f'workflowy_order_helper_rejected:{result}')
     return result
 
 
-def sync_items(
+def _sync_items_once(
     client,
     db,
     items: list[dict],
@@ -311,6 +366,7 @@ def sync_items(
 ) -> dict:
     from .roadmap_bridge import (
         GROUP_PREFIX,
+        ROADMAP_NAMESPACE,
         ROADMAP_ROOT_KEY,
         _hydrate_mapped_nodes,
         _mapping_get,
@@ -325,6 +381,7 @@ def sync_items(
     keys += [GROUP_PREFIX + k for k, _ in ROADMAP_SECTIONS]
     keys += ['wi:' + i['work_item_id'] for i in items]
     keys += ['issue-inbox:' + issue['issue_id'] for issue in issues]
+    keys += [ISSUE_DETAIL_PREFIX + issue['issue_id'] for issue in issues]
     keys += ['wi-history:' + i['work_item_id'] for i in items
              if len(i.get('execution_history') or []) > 1]
     for item in items:
@@ -333,8 +390,15 @@ def sync_items(
         keys += [MIRROR_PREFIX + item['work_item_id'] + ':unlock:' + dep['work_item_id']
                  for dep in item.get('unlocks', [])[1:]]
     keys += [i['prompt_id'] for i in items if i['prompt_id']]
+    mapped_issue_keys = [str(row['external_key']) for row in db.execute(
+        """SELECT external_key FROM mappings
+           WHERE namespace=? AND (external_key LIKE 'issue-inbox:%'
+                                  OR external_key LIKE 'issue-inbox-detail:%')""",
+        (ROADMAP_NAMESPACE,),
+    )]
+    keys += mapped_issue_keys
     _hydrate_mapped_nodes(client, db, nodes, keys)
-    counts = dict(created=0, updated=0, moved=0)
+    counts = dict(created=0, updated=0, moved=0, deleted=0)
 
     def put(key, parent_id, name, note='', layout='bullets', legacy=None,
             count_update=True, metadata=None, reparent=True):
@@ -367,13 +431,19 @@ def sync_items(
         db.commit()  # Preserve acknowledged remote identities across crashes.
         return node_id
 
-    root_source = 'Checklist 2.0 · le viste canoniche C2 sono la fonte autoritativa.'
-    root = put(ROADMAP_ROOT_KEY, parent, 'Codex', roadmap_projection_note(pending=True, source=root_source), 'h1', count_update=False)
+    root = put(ROADMAP_ROOT_KEY, parent, 'Codex', roadmap_projection_note(pending=True, source=ROOT_SOURCE), 'h1', count_update=False)
+    group_counts = {
+        key: sum(1 for item in items if item['group'] == key)
+        for key, _label in ROADMAP_SECTIONS
+    }
     scope_ids = {
         'inbox': put(SCOPE_PREFIX+'inbox', root, 'Inbox execution order',
-                     'Ordine manuale dell’inbox. Il lifecycle resta sola lettura.', 'h2'),
+                     f'{len(issues)} issue canoniche pending. Ordine manuale dell’inbox; '
+                     'il lifecycle resta sola lettura.', 'h2'),
         'roadmap': put(SCOPE_PREFIX+'roadmap', root, 'Roadmap',
-                      'Ready e contesto di blocchi/dipendenze. Il lifecycle resta sola lettura.', 'h2'),
+                      f'{len(items)} work item canonici in {len(ROADMAP_SECTIONS)} sezioni. '
+                      'Espandi per navigare Ready e il contesto di blocchi/dipendenze; '
+                      'il lifecycle resta sola lettura.', 'h2'),
     }
     reset_ids = {
         scope: put(RESET_PREFIX+scope, scope_ids[scope], 'Reset to AI order',
@@ -381,9 +451,37 @@ def sync_items(
         for scope in ('inbox', 'roadmap')
     }
     groups = {
-        key: put(GROUP_PREFIX+key, scope_ids['roadmap'], label, layout='h3')
+        key: put(GROUP_PREFIX+key, scope_ids['roadmap'], label,
+                 f'{group_counts[key]} work item canonici.', layout='h3')
         for key, label in ROADMAP_SECTIONS
     }
+
+    current_issue_ids = {issue['issue_id'] for issue in issues}
+    mapped_issue_ids = {
+        key.removeprefix('issue-inbox:')
+        if key.startswith('issue-inbox:')
+        else key.removeprefix(ISSUE_DETAIL_PREFIX)
+        for key in mapped_issue_keys
+    }
+    for issue_id in sorted(mapped_issue_ids - current_issue_ids):
+        key = 'issue-inbox:' + issue_id
+        detail_key = ISSUE_DETAIL_PREFIX + issue_id
+        detail = _mapping_get(db, detail_key)
+        mapped = _mapping_get(db, key)
+        for node_id in (
+            detail[0] if detail and detail[0] in nodes else None,
+            mapped[0] if mapped and mapped[0] in nodes else None,
+        ):
+            if node_id is None:
+                continue
+            client.delete_node(node_id)
+            nodes.pop(node_id, None)
+            counts['deleted'] += 1
+        db.execute(
+            'DELETE FROM mappings WHERE namespace=? AND external_key IN (?,?)',
+            (ROADMAP_NAMESPACE, key, detail_key),
+        )
+        db.commit()
     links = {}
     for item in items:
         name, note = item_text(item, links)
@@ -401,7 +499,18 @@ def sync_items(
         name, note = issue_text(issue)
         issue_links[issue['issue_id']] = put(
             'issue-inbox:'+issue['issue_id'], scope_ids['inbox'], name, note,
-            reparent=False)
+            reparent=False, metadata={
+                'entity_kind': 'issue_inbox',
+                'entity_id': issue['issue_id'],
+            })
+        detail_name, detail_note = issue_detail_text(issue)
+        put(
+            ISSUE_DETAIL_PREFIX+issue['issue_id'], issue_links[issue['issue_id']],
+            detail_name, detail_note, metadata={
+                'entity_kind': 'issue_inbox_detail',
+                'entity_id': issue['issue_id'],
+            },
+        )
 
     expected_parents: dict[str, str] = {}
     by_item = {item['work_item_id']: item for item in items}
@@ -443,14 +552,31 @@ def sync_items(
         reset_node = nodes.get(reset_ids[scope])
         reset_requested = bool(reset_node and reset_node.get('completed'))
         if reset_requested:
-            modified = reset_node.get('modifiedAt') or ''
-            request_key = f'workflowy-clear-manual-order-{scope}-{reset_ids[scope]}-{modified}'
-            if not db.execute('SELECT 1 FROM events WHERE source=? AND external_key=?',
-                              ('workflowy_manual_order', request_key)).fetchone():
-                manual_order_adapter('clear', scope=scope)
+            overrides = sorted(
+                ({
+                    'entity_id': entity_id,
+                    'rank': _manual_rank(row),
+                    'source_modified_at': row.get('manual_order_source_modified_at'),
+                } for entity_id, row in scope_rows[scope].items()
+                 if _manual_rank(row) is not None),
+                key=lambda value: value['entity_id'],
+            )
+            request_key = _semantic_event_key('clear', scope, overrides)
+            already_submitted = db.execute(
+                'SELECT 1 FROM events WHERE source=? AND external_key=?',
+                ('workflowy_manual_order', request_key),
+            ).fetchone()
+            if overrides and not already_submitted:
+                manual_order_adapter(
+                    'clear', scope=scope,
+                    ordered_ids=[entry['entity_id'] for entry in overrides],
+                    request_token=request_key,
+                )
                 db.execute('INSERT INTO events(source,external_key,payload_json) VALUES(?,?,?)',
                            ('workflowy_manual_order', request_key,
-                            json.dumps({'scope': scope, 'action': 'clear'}, sort_keys=True)))
+                            json.dumps({'scope': scope, 'action': 'clear',
+                                        'overrides': overrides}, sort_keys=True)))
+                db.commit()
                 mutations_submitted += 1
             client.delete_node(reset_ids[scope])
             nodes.pop(reset_ids[scope], None)
@@ -465,8 +591,10 @@ def sync_items(
               and set(current_order) == set(last_order)
               and current_order != last_order):
             modified = str(_source_modified_at(nodes, canonical))
-            digest = hashlib.sha256(json.dumps(current_order).encode()).hexdigest()[:16]
-            request_key = f'workflowy-set-manual-order-{scope}-{digest}-{modified}'
+            request_key = _semantic_event_key(
+                'set', scope,
+                {'ordered_ids': current_order, 'source_modified_at': modified},
+            )
             if not db.execute('SELECT 1 FROM events WHERE source=? AND external_key=?',
                               ('workflowy_manual_order', request_key)).fetchone():
                 manual_order_adapter(
@@ -475,6 +603,7 @@ def sync_items(
                 db.execute('INSERT INTO events(source,external_key,payload_json) VALUES(?,?,?)',
                            ('workflowy_manual_order', request_key,
                             json.dumps({'scope': scope, 'ordered_ids': current_order}, sort_keys=True)))
+                db.commit()
                 mutations_submitted += 1
             state['pending_order'] = current_order
             state.pop('force_ai', None)
@@ -609,7 +738,46 @@ def sync_items(
                 for entity_id in canonical):
             state.pop('force_ai', None)
         _mapping_set(db, SCOPE_PREFIX + scope, scope_ids[scope], state)
-    put(ROADMAP_ROOT_KEY, parent, 'Codex', roadmap_projection_note(pending=False, source=root_source), 'h1', count_update=False)
+    put(ROADMAP_ROOT_KEY, parent, 'Codex', roadmap_projection_note(pending=False, source=ROOT_SOURCE), 'h1', count_update=False)
     db.commit()
     return dict(prompts=len(items), issues=len(issues), **counts,
                 mutations_submitted=mutations_submitted, warnings=warnings)
+
+
+def _projection_diagnostic(exc: Exception) -> str:
+    message = re.sub(r'https?://\S+', '[url]', str(exc), flags=re.IGNORECASE)
+    message = re.sub(r'\s+', ' ', message).strip()
+    message = re.sub(r'[^A-Za-z0-9_.:\- /\[\]]+', '?', message)[:120]
+    return type(exc).__name__ + (': ' + message if message else '')
+
+
+def sync_items(
+    client,
+    db,
+    items: list[dict],
+    *,
+    parent: str,
+    issues: list[dict] | None = None,
+    manual_order_adapter: Callable[..., dict] = run_manual_order_adapter,
+) -> dict:
+    try:
+        return _sync_items_once(
+            client, db, items, parent=parent, issues=issues,
+            manual_order_adapter=manual_order_adapter,
+        )
+    except Exception as exc:
+        from .roadmap_bridge import ROADMAP_ROOT_KEY, _mapping_get, roadmap_projection_note
+        mapped = _mapping_get(db, ROADMAP_ROOT_KEY)
+        if mapped:
+            try:
+                client.update_node(
+                    mapped[0], 'Codex',
+                    note=roadmap_projection_note(
+                        pending=False, source=ROOT_SOURCE,
+                        error=_projection_diagnostic(exc),
+                    ),
+                    layout_mode='h1',
+                )
+            except Exception:
+                pass  # Preserve the primary projection failure.
+        raise

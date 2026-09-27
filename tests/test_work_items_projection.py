@@ -1,10 +1,13 @@
 from contextlib import closing
 import sqlite3
+import sys
 import unittest
 from unittest.mock import Mock, patch
 
 from workflowy_importer.cache import connect
+from workflowy_importer.manual_order_control import request_key as control_request_key
 from workflowy_importer.work_items_projection import (
+    issue_text,
     item_text,
     read_issue_inbox,
     read_items,
@@ -51,7 +54,7 @@ class ProjectionTests(unittest.TestCase):
             self.assertIn('✅ Proiezione Workflowy allineata', root['note'])
             self.assertNotIn('⏳ Proiezione Workflowy in corso', root['note'])
 
-    def test_failed_projection_leaves_pending_status_visible(self):
+    def test_failed_projection_leaves_actionable_diagnostic_visible(self):
         class FailBeforeGroups(FakeClient):
             def create_node(self, *args, **kwargs):
                 if self.nodes:
@@ -62,7 +65,10 @@ class ProjectionTests(unittest.TestCase):
         with closing(connect(':memory:')) as db:
             with self.assertRaisesRegex(RuntimeError, 'projection_failed'):
                 sync_items(client, db, [item('writer-applied')], parent='inbox')
-        self.assertIn('⏳ Proiezione Workflowy in corso', client.nodes[0]['note'])
+        self.assertIn('⚠ Proiezione Workflowy non completata', client.nodes[0]['note'])
+        self.assertIn('Rieseguire roadmap-sync', client.nodes[0]['note'])
+        self.assertIn('RuntimeError: projection_failed', client.nodes[0]['note'])
+        self.assertNotIn('⏳ Proiezione Workflowy in corso', client.nodes[0]['note'])
 
     def test_legacy_not_activated_before_cutover(self):
         self.assertIsNone(read_items(roadmap_bytes()))
@@ -220,8 +226,135 @@ class ProjectionTests(unittest.TestCase):
                    and n['name'].startswith('☐')]
         self.assertEqual(['☐ Second issue', '☐ First issue'],
                          [node['name'] for node in visible])
-        self.assertIn('C2_ISSUE_ID:issue:two', visible[0]['note'])
-        self.assertIn('Manual rank: 1', visible[0]['note'])
+        self.assertNotIn('issue:two', visible[0]['note'])
+        self.assertIn('#repo-b', visible[0]['note'])
+        detail = next(n for n in client.nodes
+                      if n.get('parent_id') == visible[0]['id'] and n['name'] == 'Dettagli')
+        self.assertEqual('Second issue', detail['note'])
+
+    def test_inbox_title_is_compact_and_full_description_is_expandable(self):
+        client = FakeClient()
+        description = (
+            'Repair the broken projection for C2_ISSUE_ID:issue:secret '
+            'https://internal.example/task/secret while preserving canonical state. '
+            + 'More diagnostic context ' * 20
+        )
+        row = issue(
+            'issue:private-id', description=description,
+            repo='https://github.com/gernalix/workflowy-importer.git',
+            executor='codex',
+        )
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, [], issues=[row], parent='inbox')
+            top = next(n for n in client.nodes if n['name'].startswith('☐ '))
+            detail = next(n for n in client.nodes
+                          if n.get('parent_id') == top['id'] and n['name'] == 'Dettagli')
+            mapping = db.execute(
+                "SELECT metadata_json FROM mappings WHERE external_key=?",
+                ('issue-inbox:issue:private-id',),
+            ).fetchone()
+        self.assertLessEqual(len(top['name']), 90)
+        for technical in ('C2_ISSUE_ID', 'issue:secret', 'private-id', 'https://'):
+            self.assertNotIn(technical, top['name'])
+            self.assertNotIn(technical, top['note'])
+        self.assertIn('#repo-workflowy-importer', top['note'])
+        self.assertIn('#executor-codex', top['note'])
+        self.assertEqual(description, detail['note'])
+        self.assertIn('issue:private-id', mapping['metadata_json'])
+
+        technical = issue(
+            'issue:hidden',
+            description=(
+                'GitHub capture issue #2330 / issue:e21c3528a43a4c539c4c23a1c3525e89 '
+                'for PROMPT_ID=741905 is P0 and absolute priority.'
+            ),
+        )
+        title, _note = issue_text(technical)
+        for hidden in ('#2330', 'issue:e21', 'PROMPT_ID', '741905'):
+            self.assertNotIn(hidden, title)
+        self.assertIn('P0 and absolute priority', title)
+
+    def test_long_inbox_description_stays_compact_and_retry_is_noop(self):
+        client = FakeClient()
+        row = issue('issue:long', description='A practical short title. ' + ('detail ' * 1000))
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, [], issues=[row], parent='inbox')
+            top = next(n for n in client.nodes if n['name'].startswith('☐ '))
+            self.assertEqual('☐ A practical short title.', top['name'])
+            self.assertLess(len(top['note']), 100)
+            result = sync_items(client, db, [], issues=[row], parent='inbox')
+        self.assertEqual(
+            (0, 0, 0, 0),
+            tuple(result[key] for key in ('created', 'updated', 'moved', 'deleted')),
+        )
+
+    def test_canonical_inbox_transition_deletes_stale_and_adds_new_item(self):
+        client = FakeClient()
+        first = issue('issue:first', description='First pending issue', observed_at_ms=1)
+        stale = issue('issue:stale', description='Stale pending issue', observed_at_ms=2)
+        added = issue('issue:added', description='New pending issue', observed_at_ms=3)
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, [], issues=[first, stale], parent='inbox')
+            stale_node = next(n for n in client.nodes if n['name'] == '☐ Stale pending issue')
+            stale_detail = next(n for n in client.nodes
+                                if n.get('parent_id') == stale_node['id'])
+            result = sync_items(client, db, [], issues=[first, added], parent='inbox')
+            mapped_stale = db.execute(
+                "SELECT 1 FROM mappings WHERE external_key IN (?,?)",
+                ('issue-inbox:issue:stale', 'issue-inbox-detail:issue:stale'),
+            ).fetchall()
+        inbox = next(n for n in client.nodes if n['name'] == 'Inbox execution order')
+        visible = [n['name'] for n in client.nodes
+                   if n.get('parent_id') == inbox['id'] and n['name'].startswith('☐ ')]
+        self.assertEqual(['☐ First pending issue', '☐ New pending issue'], visible)
+        self.assertNotIn(stale_node['id'], {n['id'] for n in client.nodes})
+        self.assertNotIn(stale_detail['id'], {n['id'] for n in client.nodes})
+        self.assertEqual([], mapped_stale)
+        self.assertEqual(2, result['deleted'])
+
+    def test_existing_roadmap_rows_repair_stale_structure_and_remain_visible(self):
+        from workflowy_importer.roadmap_bridge import (
+            GROUP_PREFIX, ROADMAP_ROOT_KEY, _mapping_set,
+        )
+        client = FakeClient()
+        root = client.create_node('detached', 'Old Codex')
+        roadmap = client.create_node('detached', 'Old Roadmap')
+        ready = client.create_node('detached', 'Old Ready')
+        mapped_item = client.create_node('detached', 'Old mapped item')
+        rows = [
+            item('ready', group='ready'), item('waiting', group='waiting'),
+            item('running', group='running', status='running'),
+            item('blocked', group='blocked', status='blocked'),
+            item('done', group='completed', status='completed'),
+            item('archived', group='archive', status='cancelled'),
+        ]
+        with closing(connect(':memory:')) as db:
+            _mapping_set(db, ROADMAP_ROOT_KEY, root)
+            _mapping_set(db, '__manual_scope__:roadmap', roadmap)
+            _mapping_set(db, GROUP_PREFIX+'ready', ready)
+            _mapping_set(db, 'wi:ready', mapped_item)
+            sync_items(client, db, rows, parent='inbox')
+            retry = sync_items(client, db, rows, parent='inbox')
+        root_node = next(n for n in client.nodes if n['id'] == root)
+        roadmap_node = next(n for n in client.nodes if n['id'] == roadmap)
+        self.assertEqual('inbox', root_node['parent_id'])
+        self.assertEqual(root, roadmap_node['parent_id'])
+        self.assertIn('6 work item canonici', roadmap_node['note'])
+        expected = {
+            'ready': 'Ready', 'waiting': 'Waiting', 'running': 'Running',
+            'blocked': 'Blocked / dependency context', 'done': 'Done',
+            'archived': 'Archive',
+        }
+        for entity_id, group_name in expected.items():
+            projected = next(n for n in client.nodes
+                             if n['name'].endswith(' ' + entity_id))
+            parent_node = next(n for n in client.nodes if n['id'] == projected['parent_id'])
+            self.assertEqual(group_name, parent_node['name'])
+            self.assertIn('1 work item canonici', parent_node['note'])
+        self.assertEqual(
+            (0, 0, 0, 0),
+            tuple(retry[key] for key in ('created', 'updated', 'moved', 'deleted')),
+        )
 
     def test_genuine_reorder_submits_one_bulk_mutation_and_repeated_sync_is_quiet(self):
         client = FakeClient()
@@ -247,12 +380,15 @@ class ProjectionTests(unittest.TestCase):
     def test_issue_inbox_reorder_sends_only_real_issue_ids(self):
         client = FakeClient()
         adapter = Mock(return_value={'status':'ok'})
-        issues = [issue('issue:one', observed_at_ms=1), issue('issue:two', observed_at_ms=2)]
+        issues = [
+            issue('issue:one', description='First issue', observed_at_ms=1),
+            issue('issue:two', description='Second issue', observed_at_ms=2),
+        ]
         with closing(connect(':memory:')) as db:
             sync_items(client, db, [item('work-item')], issues=issues, parent='inbox',
                        manual_order_adapter=adapter)
             inbox = next(n for n in client.nodes if n['name'] == 'Inbox execution order')
-            second = next(n for n in client.nodes if 'Issue issue:two' in n['name'])
+            second = next(n for n in client.nodes if n['name'] == '☐ Second issue')
             client.move_node(second['id'], inbox['id'], position='top')
             sync_items(client, db, [item('work-item')], issues=issues, parent='inbox',
                        manual_order_adapter=adapter)
@@ -283,16 +419,138 @@ class ProjectionTests(unittest.TestCase):
     def test_reset_submits_clear_for_scope_only(self):
         client = FakeClient()
         adapter = Mock(return_value={'status':'ok'})
+        rows = [item(
+            'one', manual_rank=1, manual_order_source='workflowy',
+            manual_order_source_modified_at='wf-generation-1',
+        )]
         with closing(connect(':memory:')) as db:
-            sync_items(client, db, [item('one')], parent='inbox',
+            sync_items(client, db, rows, parent='inbox',
                        manual_order_adapter=adapter)
             reset = next(n for n in client.nodes if n['name'] == 'Reset to AI order'
                          and next(p for p in client.nodes if p['id'] == n['parent_id'])['name'] == 'Roadmap')
+            old_reset_id = reset['id']
             reset['completed'] = True
-            result = sync_items(client, db, [item('one')], parent='inbox',
+            result = sync_items(client, db, rows, parent='inbox',
                                 manual_order_adapter=adapter)
             self.assertEqual(1, result['mutations_submitted'])
-            adapter.assert_called_once_with('clear', scope='roadmap')
+            adapter.assert_called_once_with(
+                'clear', scope='roadmap', ordered_ids=['one'],
+                request_token=adapter.call_args.kwargs['request_token'])
+            self.assertTrue(
+                adapter.call_args.kwargs['request_token'].startswith(
+                    'workflowy-clear-manual-order-roadmap-'))
+            fresh = next(n for n in client.nodes if n['name'] == 'Reset to AI order'
+                         and next(p for p in client.nodes if p['id'] == n['parent_id'])['name'] == 'Roadmap')
+            self.assertNotEqual(old_reset_id, fresh['id'])
+            self.assertFalse(fresh.get('completed', False))
+
+    def test_repeated_reset_without_override_is_consumed_as_safe_noop(self):
+        client = FakeClient()
+        adapter = Mock(side_effect=AssertionError('backend clear must not run'))
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, [item('one')], parent='inbox',
+                       manual_order_adapter=adapter)
+            roadmap = next(n for n in client.nodes if n['name'] == 'Roadmap')
+            reset = next(n for n in client.nodes if n['name'] == 'Reset to AI order'
+                         and n.get('parent_id') == roadmap['id'])
+            first_id = reset['id']
+            reset['completed'] = True
+            first = sync_items(client, db, [item('one')], parent='inbox',
+                               manual_order_adapter=adapter)
+            fresh = next(n for n in client.nodes if n['name'] == 'Reset to AI order'
+                         and n.get('parent_id') == roadmap['id'])
+            self.assertNotEqual(first_id, fresh['id'])
+            self.assertFalse(fresh.get('completed', False))
+            fresh['completed'] = True
+            second = sync_items(client, db, [item('one')], parent='inbox',
+                                manual_order_adapter=adapter)
+        self.assertEqual((0, 0), (first['mutations_submitted'], second['mutations_submitted']))
+        adapter.assert_not_called()
+
+    def test_semantic_reset_retry_does_not_resubmit_or_conflict(self):
+        client = FakeClient()
+        adapter = Mock(side_effect=[
+            {'status':'ok'},
+            RuntimeError('request_key_conflict'),
+        ])
+        rows = [item(
+            'one', manual_rank=1, manual_order_source='workflowy',
+            manual_order_source_modified_at='wf-generation-1',
+        )]
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, rows, parent='inbox', manual_order_adapter=adapter)
+            roadmap = next(n for n in client.nodes if n['name'] == 'Roadmap')
+            reset = next(n for n in client.nodes if n['name'] == 'Reset to AI order'
+                         and n.get('parent_id') == roadmap['id'])
+            reset['completed'] = True
+            first = sync_items(client, db, rows, parent='inbox', manual_order_adapter=adapter)
+            fresh = next(n for n in client.nodes if n['name'] == 'Reset to AI order'
+                         and n.get('parent_id') == roadmap['id'])
+            fresh['completed'] = True
+            replay = sync_items(client, db, rows, parent='inbox', manual_order_adapter=adapter)
+        self.assertEqual((1, 0), (first['mutations_submitted'], replay['mutations_submitted']))
+        self.assertEqual(1, adapter.call_count)
+
+    def test_already_applied_reset_still_recreates_control_and_finishes_projection(self):
+        client = FakeClient()
+        adapter = Mock(return_value={
+            'status': 'ok', 'idempotent': True, 'outcome': 'already_applied',
+        })
+        rows = [item(
+            'one', manual_rank=1, manual_order_source='workflowy',
+            manual_order_source_modified_at='wf-generation-1',
+        )]
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, rows, parent='inbox', manual_order_adapter=adapter)
+            roadmap = next(n for n in client.nodes if n['name'] == 'Roadmap')
+            reset = next(n for n in client.nodes if n['name'] == 'Reset to AI order'
+                         and n.get('parent_id') == roadmap['id'])
+            reset_id = reset['id']
+            reset['completed'] = True
+            result = sync_items(
+                client, db, rows, parent='inbox', manual_order_adapter=adapter,
+            )
+        fresh = next(n for n in client.nodes if n['name'] == 'Reset to AI order'
+                     and n.get('parent_id') == roadmap['id'])
+        root = next(n for n in client.nodes if n['name'] == 'Codex')
+        self.assertEqual(1, result['mutations_submitted'])
+        self.assertNotEqual(reset_id, fresh['id'])
+        self.assertFalse(fresh.get('completed', False))
+        self.assertIn('✅ Proiezione Workflowy allineata', root['note'])
+        self.assertNotIn('⏳ Proiezione Workflowy in corso', root['note'])
+
+    def test_canonical_status_and_dependency_change_converges_without_echo(self):
+        client = FakeClient()
+        adapter = Mock(return_value={'status': 'ok'})
+        dependency = item('dependency', title='Dependency')
+        target = item('target', group='waiting', dependencies=[{
+            'work_item_id': 'dependency', 'title': 'Dependency', 'status': 'pending',
+        }])
+        with closing(connect(':memory:')) as db:
+            sync_items(
+                client, db, [dependency, target], parent='inbox',
+                manual_order_adapter=adapter,
+            )
+            changed_dependency = item(
+                'dependency', title='Dependency', status='completed', group='completed',
+            )
+            changed_target = item('target', group='ready', dependencies=[{
+                'work_item_id': 'dependency', 'title': 'Dependency', 'status': 'completed',
+            }])
+            result = sync_items(
+                client, db, [changed_dependency, changed_target], parent='inbox',
+                manual_order_adapter=adapter,
+            )
+        target_node = next(n for n in client.nodes if n['name'].endswith(' target'))
+        target_parent = next(n for n in client.nodes if n['id'] == target_node['parent_id'])
+        dependency_node = next(n for n in client.nodes if n['name'].endswith(' Dependency'))
+        dependency_parent = next(
+            n for n in client.nodes if n['id'] == dependency_node['parent_id'])
+        self.assertEqual('Ready', target_parent['name'])
+        self.assertEqual('Done', dependency_parent['name'])
+        self.assertNotIn('In attesa di:', target_node['note'])
+        self.assertEqual(0, result['mutations_submitted'])
+        adapter.assert_not_called()
 
     def test_drag_across_status_section_is_reverted_without_mutation(self):
         client = FakeClient()
@@ -364,17 +622,52 @@ class ProjectionTests(unittest.TestCase):
 
     @patch('workflowy_importer.work_items_projection.subprocess.run')
     def test_helper_adapter_builds_argv_and_never_builds_raw_mutation(self, run):
-        run.return_value = Mock(returncode=0, stdout='{"status":"ok"}', stderr='')
+        run.return_value = Mock(returncode=0, stdout='{"status":"queued"}', stderr='')
         result = run_manual_order_adapter(
             'set', scope='inbox', ordered_ids=['issue:two', 'issue:one'],
             source_modified_at=1790000000)
-        self.assertEqual({'status':'ok'}, result)
+        self.assertEqual({'status':'queued'}, result)
         argv = run.call_args.args[0]
-        self.assertEqual('set', argv[2])
-        self.assertEqual(['--scope', 'inbox'], argv[3:5])
-        self.assertEqual('1790000000', argv[6])
-        self.assertEqual(['issue:two', 'issue:one'], argv[7:])
+        self.assertEqual(
+            [sys.executable, '-m', 'workflowy_importer.manual_order_control'],
+            argv[:3],
+        )
+        self.assertEqual('set', argv[3])
+        self.assertEqual(['--scope', 'inbox'], argv[4:6])
+        self.assertEqual('1790000000', argv[7])
+        self.assertEqual(['issue:two', 'issue:one'], argv[8:])
         self.assertNotIn('codex-roadmap.mutation.v1', ' '.join(argv))
+
+    @patch('workflowy_importer.work_items_projection.subprocess.run')
+    def test_helper_adapter_treats_same_semantic_request_conflict_as_applied(self, run):
+        run.return_value = Mock(
+            returncode=1,
+            stdout='',
+            stderr='MutationSubmitError: request_key_conflict:c2-workflowy-order-v2-key',
+        )
+        result = run_manual_order_adapter(
+            'clear', scope='roadmap', ordered_ids=['one'],
+            request_token='reset-generation-one',
+        )
+        self.assertEqual('already_applied', result['outcome'])
+        self.assertTrue(result['idempotent'])
+        argv = run.call_args.args[0]
+        self.assertIn('--request-token', argv)
+        self.assertIn('reset-generation-one', argv)
+
+    def test_reset_request_identity_replays_one_control_but_allows_next_generation(self):
+        first = control_request_key(
+            'clear', 'roadmap', ['two', 'one'], source_modified_at=None,
+            request_token='reset-generation-one',
+        )
+        self.assertEqual(first, control_request_key(
+            'clear', 'roadmap', ['one', 'two'], source_modified_at=None,
+            request_token='reset-generation-one',
+        ))
+        self.assertNotEqual(first, control_request_key(
+            'clear', 'roadmap', ['one', 'two'], source_modified_at=None,
+            request_token='reset-generation-two',
+        ))
 
     def test_legacy_action_groups_move_under_archive(self):
         from workflowy_importer.roadmap_bridge import _mapping_set, GROUP_PREFIX, ROADMAP_ROOT_KEY
