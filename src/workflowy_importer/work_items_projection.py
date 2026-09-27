@@ -264,7 +264,7 @@ def _human_tag(prefix: str, value: object) -> str | None:
     return f'#{prefix}-{slug}' if slug else None
 
 
-def _compact_issue_title(description: object, *, limit: int = 88) -> str:
+def _compact_issue_title(description: object, *, limit: int = 52) -> str:
     text = html.unescape(str(description or ''))
     text = re.sub(r'https?://\S+|www\.\S+', ' ', text, flags=re.IGNORECASE)
     text = re.sub(
@@ -277,6 +277,14 @@ def _compact_issue_title(description: object, *, limit: int = 88) -> str:
     text = re.sub(
         r'\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b',
         ' ', text, flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r'^(?:P0\s*[—-]\s*)?(?:LIVE\s+)?(?:regression of completed Workflowy\s*:|'
+        r'(?:Retrospective (?:finding|bottleneck|friction)|Cross-cutting optimization[^:]*)'
+        r'(?: from ChatGPT conversation)?[^:]*:|ChatGPT/RDC diagnostic bug:|'
+        r'ChatGPT RDC supervisor:|Supervisor watcher bootstrap bug:|'
+        r'Amendment to the mass ChatGPT retrospective task\s*\([^)]*\):)\s*',
+        '', text, flags=re.IGNORECASE,
     )
     text = re.sub(r'\s+', ' ', text).strip(' \t\r\n-:;,.')
     if not text:
@@ -294,10 +302,7 @@ def issue_text(issue: dict) -> tuple[str, str]:
         _human_tag('repo', issue.get('repo')),
         _human_tag('executor', issue.get('executor')),
     ]
-    note = 'Espandi il figlio Dettagli per la descrizione completa.'
-    human_tags = ' · '.join(tag for tag in tags if tag)
-    if human_tags:
-        note += '\n' + human_tags
+    note = ' · '.join(tag for tag in tags if tag)
     return '☐ ' + html.escape(_compact_issue_title(issue.get('description')), quote=True), note
 
 
