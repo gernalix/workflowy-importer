@@ -44,6 +44,11 @@ def main() -> int:
             and state.get('phase') != 'canonical_successor'
             and local_lease_matches(state)):
         return 0
+    if (outcome in {'RESUMED', 'STALE_TAKEOVER'}
+            and isinstance(state.get('claim'), dict)
+            and state['claim'].get('submission') == 'applied'
+            and local_lease_matches(state)):
+        return 0
     if outcome in {'ALREADY_ACTIVE', 'RESUMED', 'STALE_TAKEOVER'}:
         # A new claim is asynchronous. The writer's DB update triggers the
         # path unit; the timer is a fallback. Keep the Workflowy drag visible
