@@ -637,9 +637,9 @@ class ProjectionTests(unittest.TestCase):
         self.assertNotIn('force_ai', metadata)
         self.assertNotIn('force_ai_stable_count', metadata)
 
-    def test_repeated_reset_without_override_is_consumed_as_safe_noop(self):
+    def test_repeated_reset_without_visible_override_still_clears_scope(self):
         client = FakeClient()
-        adapter = Mock(side_effect=AssertionError('backend clear must not run'))
+        adapter = Mock(return_value={'status': 'ok'})
         with closing(connect(':memory:')) as db:
             sync_items(client, db, [item('one')], parent='inbox',
                        manual_order_adapter=adapter)
@@ -657,8 +657,11 @@ class ProjectionTests(unittest.TestCase):
             fresh['completed'] = True
             second = sync_items(client, db, [item('one')], parent='inbox',
                                 manual_order_adapter=adapter)
-        self.assertEqual((0, 0), (first['mutations_submitted'], second['mutations_submitted']))
-        adapter.assert_not_called()
+        self.assertEqual((1, 1), (first['mutations_submitted'], second['mutations_submitted']))
+        self.assertEqual(2, adapter.call_count)
+        for call in adapter.call_args_list:
+            self.assertEqual(('clear',), call.args)
+            self.assertEqual({'scope': 'roadmap', 'ordered_ids': None}, call.kwargs)
 
     def test_distinct_reset_nodes_resubmit_same_override_with_distinct_local_events(self):
         client = FakeClient()
