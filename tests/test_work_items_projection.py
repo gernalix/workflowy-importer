@@ -621,12 +621,9 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual((0, 0), (first['mutations_submitted'], second['mutations_submitted']))
         adapter.assert_not_called()
 
-    def test_semantic_reset_retry_does_not_resubmit_or_conflict(self):
+    def test_distinct_reset_nodes_resubmit_same_override_with_distinct_local_events(self):
         client = FakeClient()
-        adapter = Mock(side_effect=[
-            {'status':'ok'},
-            RuntimeError('request_key_conflict'),
-        ])
+        adapter = Mock(side_effect=[{'status':'ok'}, {'status':'ok'}])
         rows = [item(
             'one', manual_rank=1, manual_order_source='workflowy',
             manual_order_source_modified_at='wf-generation-1',
@@ -636,14 +633,21 @@ class ProjectionTests(unittest.TestCase):
             roadmap = next(n for n in client.nodes if n['name'] == 'Roadmap')
             reset = next(n for n in client.nodes if n['name'] == 'Reset to AI order'
                          and n.get('parent_id') == roadmap['id'])
+            first_reset_id = reset['id']
             reset['completed'] = True
             first = sync_items(client, db, rows, parent='inbox', manual_order_adapter=adapter)
             fresh = next(n for n in client.nodes if n['name'] == 'Reset to AI order'
                          and n.get('parent_id') == roadmap['id'])
+            self.assertNotEqual(first_reset_id, fresh['id'])
             fresh['completed'] = True
-            replay = sync_items(client, db, rows, parent='inbox', manual_order_adapter=adapter)
-        self.assertEqual((1, 0), (first['mutations_submitted'], replay['mutations_submitted']))
-        self.assertEqual(1, adapter.call_count)
+            second = sync_items(client, db, rows, parent='inbox', manual_order_adapter=adapter)
+            keys = [row[0] for row in db.execute(
+                "SELECT external_key FROM events WHERE source='workflowy_manual_order' ORDER BY id"
+            )]
+        self.assertEqual((1, 1), (first['mutations_submitted'], second['mutations_submitted']))
+        self.assertEqual(2, adapter.call_count)
+        self.assertEqual(2, len(keys))
+        self.assertNotEqual(keys[0], keys[1])
 
     def test_canonical_status_and_dependency_change_converges_without_echo(self):
         client = FakeClient()

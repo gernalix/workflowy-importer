@@ -636,7 +636,12 @@ def _sync_items_once(
                  if _manual_rank(row) is not None),
                 key=lambda value: value['entity_id'],
             )
-            request_key = _semantic_event_key('clear', scope, overrides)
+            reset_event = {
+                'node_id': str(reset_node.get('id') or ''),
+                'modified_at': reset_node.get('modifiedAt'),
+                'overrides': overrides,
+            }
+            request_key = _semantic_event_key('clear', scope, reset_event)
             already_submitted = db.execute(
                 'SELECT 1 FROM events WHERE source=? AND external_key=?',
                 ('workflowy_manual_order', request_key),
