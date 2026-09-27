@@ -50,6 +50,30 @@ class RoadmapSyncPreflightTests(unittest.TestCase):
                 run.return_value = Mock(returncode=0, stdout=json.dumps(state))
                 self.assertEqual(1, roadmap_sync_preflight.main())
 
+    @patch.object(roadmap_sync_preflight, 'local_lease_matches', return_value=True)
+    @patch.object(roadmap_sync_preflight.subprocess, 'run')
+    def test_applied_takeover_claim_allows_sync(self, run, matches):
+        for outcome in ('STALE_TAKEOVER', 'RESUMED'):
+            with self.subTest(outcome=outcome):
+                run.return_value = Mock(returncode=0, stdout=json.dumps({
+                    'outcome': outcome,
+                    'supervisor_id': 'supervisor-new',
+                    'fencing_token': 43,
+                    'claim': {'submission': 'applied'},
+                }))
+                self.assertEqual(0, roadmap_sync_preflight.main())
+        self.assertEqual(2, matches.call_count)
+
+    @patch.object(roadmap_sync_preflight, 'local_lease_matches', return_value=False)
+    @patch.object(roadmap_sync_preflight.subprocess, 'run')
+    def test_applied_claim_with_stale_local_lease_defers_sync(self, run, _matches):
+        run.return_value = Mock(returncode=0, stdout=json.dumps({
+            'outcome': 'STALE_TAKEOVER',
+            'claim': {'submission': 'applied'},
+        }))
+        with redirect_stderr(StringIO()):
+            self.assertEqual(1, roadmap_sync_preflight.main())
+
     @patch.object(roadmap_sync_preflight.subprocess, 'run')
     def test_recovery_failure_fails_service(self, run):
         for result in (
