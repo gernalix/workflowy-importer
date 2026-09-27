@@ -34,6 +34,7 @@ class ManualOrderControlTests(unittest.TestCase):
         self.assertEqual('supervisor-one', call['supervisor_id'])
         self.assertEqual(7, call['fencing_token'])
         self.assertEqual('c2-workflowy-order-transport-set', call['request_key'])
+        self.assertTrue(call['canonical_renew'])
         helper.load_runtime_identity.assert_called_once_with()
         self.assertEqual('queued', json.loads(output.getvalue())['status'])
 
@@ -57,6 +58,7 @@ class ManualOrderControlTests(unittest.TestCase):
         self.assertEqual('supervisor-one', call['supervisor_id'])
         self.assertEqual(7, call['fencing_token'])
         self.assertEqual('c2-workflowy-order-transport-clear', call['request_key'])
+        self.assertTrue(call['canonical_renew'])
         helper.load_runtime_identity.assert_called_once_with()
         self.assertEqual('queued', json.loads(output.getvalue())['status'])
 

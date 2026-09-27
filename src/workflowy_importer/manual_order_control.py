@@ -65,6 +65,7 @@ def main(argv=None) -> int:
         supervisor_id=supervisor_id,
         fencing_token=fencing_token,
         actor='c2-workflowy-order',
+        canonical_renew=True,
     )
     print(json.dumps({'status': 'queued', **result}, sort_keys=True))
     return 0
