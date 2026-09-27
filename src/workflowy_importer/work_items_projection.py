@@ -254,6 +254,60 @@ def _source_modified_at(nodes: dict[str, dict], canonical: dict[str, str]) -> ob
         return max(values, key=lambda value: str(value))
 
 
+def _reparent_stays_in_expected_section(
+    nodes: dict[str, dict], node_id: str, expected_parent: str,
+    canonical_node_ids: set[str],
+) -> bool:
+    """Treat temporary nesting under a same-section task as reorder intent."""
+    current = str(nodes.get(node_id, {}).get('parent_id') or '')
+    seen: set[str] = set()
+    while current and current not in seen:
+        if current == expected_parent:
+            return True
+        if current not in canonical_node_ids:
+            return False
+        seen.add(current)
+        current = str(nodes.get(current, {}).get('parent_id') or '')
+    return False
+
+
+def _edge_move_plan(current: list[str], desired: list[str]) -> tuple[list[str], list[str]]:
+    """Minimize top/bottom API moves by keeping the longest desired slice in place."""
+    if current == desired:
+        return [], []
+    positions = {node_id: index for index, node_id in enumerate(current)}
+    best_start = best_end = 0
+    for start in range(len(desired)):
+        last = -1
+        end = start
+        while end < len(desired):
+            pos = positions.get(desired[end])
+            if pos is None or pos <= last:
+                break
+            last = pos
+            end += 1
+        if end - start > best_end - best_start:
+            best_start, best_end = start, end
+    return desired[:best_start], desired[best_end:]
+
+
+def _converge_sequence(client, nodes: dict[str, dict], owner: str,
+                       sequence: list[str]) -> int:
+    current = [node_id for node_id in _children_in_order(nodes, owner)
+               if node_id in set(sequence)]
+    if current == sequence:
+        return 0
+    prefix, suffix = _edge_move_plan(current, sequence)
+    moved = 0
+    for node_id in reversed(prefix):
+        client.move_node(node_id, owner, position='top')
+        moved += 1
+    for node_id in suffix:
+        client.move_node(node_id, owner, position='bottom')
+        moved += 1
+    return moved
+
+
 def _human_tag(prefix: str, value: object) -> str | None:
     text = str(value or '').strip().rstrip('/').removesuffix('.git')
     if not text:
@@ -558,9 +612,13 @@ def _sync_items_once(
         last_order = state.get('last_render_order')
         last_parents = state.get('expected_parents') or {}
         state_is_current = state.get('projection_version') == PROJECTION_VERSION
+        canonical_node_ids = set(canonical.values())
         parent_changed = state_is_current and any(
             node_id in nodes
             and str(nodes[node_id].get('parent_id') or '') != str(last_parents.get(item_id) or '')
+            and not _reparent_stays_in_expected_section(
+                nodes, node_id, str(last_parents.get(item_id) or ''), canonical_node_ids,
+            )
             for item_id, node_id in canonical.items() if item_id in last_parents
         )
 
@@ -668,11 +726,7 @@ def _sync_items_once(
         sequences.setdefault(expected_parents[item['work_item_id']], []).append(
             links[item['work_item_id']])
     for owner, sequence in sequences.items():
-        current = [node_id for node_id in _children_in_order(nodes, owner) if node_id in set(sequence)]
-        if current != sequence:
-            for node_id in reversed(sequence):
-                client.move_node(node_id, owner, position='top')
-                counts['moved'] += 1
+        counts['moved'] += _converge_sequence(client, nodes, owner, sequence)
 
     history_links = {}
     for item in items:
