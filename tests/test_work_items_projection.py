@@ -5,7 +5,6 @@ import unittest
 from unittest.mock import Mock, patch
 
 from workflowy_importer.cache import connect
-from workflowy_importer.manual_order_control import request_key as control_request_key
 from workflowy_importer.work_items_projection import (
     issue_text,
     item_text,
@@ -434,11 +433,7 @@ class ProjectionTests(unittest.TestCase):
                                 manual_order_adapter=adapter)
             self.assertEqual(1, result['mutations_submitted'])
             adapter.assert_called_once_with(
-                'clear', scope='roadmap', ordered_ids=['one'],
-                request_token=adapter.call_args.kwargs['request_token'])
-            self.assertTrue(
-                adapter.call_args.kwargs['request_token'].startswith(
-                    'workflowy-clear-manual-order-roadmap-'))
+                'clear', scope='roadmap', ordered_ids=['one'])
             fresh = next(n for n in client.nodes if n['name'] == 'Reset to AI order'
                          and next(p for p in client.nodes if p['id'] == n['parent_id'])['name'] == 'Roadmap')
             self.assertNotEqual(old_reset_id, fresh['id'])
@@ -490,34 +485,6 @@ class ProjectionTests(unittest.TestCase):
             replay = sync_items(client, db, rows, parent='inbox', manual_order_adapter=adapter)
         self.assertEqual((1, 0), (first['mutations_submitted'], replay['mutations_submitted']))
         self.assertEqual(1, adapter.call_count)
-
-    def test_already_applied_reset_still_recreates_control_and_finishes_projection(self):
-        client = FakeClient()
-        adapter = Mock(return_value={
-            'status': 'ok', 'idempotent': True, 'outcome': 'already_applied',
-        })
-        rows = [item(
-            'one', manual_rank=1, manual_order_source='workflowy',
-            manual_order_source_modified_at='wf-generation-1',
-        )]
-        with closing(connect(':memory:')) as db:
-            sync_items(client, db, rows, parent='inbox', manual_order_adapter=adapter)
-            roadmap = next(n for n in client.nodes if n['name'] == 'Roadmap')
-            reset = next(n for n in client.nodes if n['name'] == 'Reset to AI order'
-                         and n.get('parent_id') == roadmap['id'])
-            reset_id = reset['id']
-            reset['completed'] = True
-            result = sync_items(
-                client, db, rows, parent='inbox', manual_order_adapter=adapter,
-            )
-        fresh = next(n for n in client.nodes if n['name'] == 'Reset to AI order'
-                     and n.get('parent_id') == roadmap['id'])
-        root = next(n for n in client.nodes if n['name'] == 'Codex')
-        self.assertEqual(1, result['mutations_submitted'])
-        self.assertNotEqual(reset_id, fresh['id'])
-        self.assertFalse(fresh.get('completed', False))
-        self.assertIn('✅ Proiezione Workflowy allineata', root['note'])
-        self.assertNotIn('⏳ Proiezione Workflowy in corso', root['note'])
 
     def test_canonical_status_and_dependency_change_converges_without_echo(self):
         client = FakeClient()
@@ -639,35 +606,15 @@ class ProjectionTests(unittest.TestCase):
         self.assertNotIn('codex-roadmap.mutation.v1', ' '.join(argv))
 
     @patch('workflowy_importer.work_items_projection.subprocess.run')
-    def test_helper_adapter_treats_same_semantic_request_conflict_as_applied(self, run):
+    def test_helper_adapter_propagates_request_key_conflict(self, run):
         run.return_value = Mock(
             returncode=1,
             stdout='',
-            stderr='MutationSubmitError: request_key_conflict:c2-workflowy-order-v2-key',
+            stderr='MutationSubmitError: request_key_conflict:transport-key',
         )
-        result = run_manual_order_adapter(
-            'clear', scope='roadmap', ordered_ids=['one'],
-            request_token='reset-generation-one',
-        )
-        self.assertEqual('already_applied', result['outcome'])
-        self.assertTrue(result['idempotent'])
-        argv = run.call_args.args[0]
-        self.assertIn('--request-token', argv)
-        self.assertIn('reset-generation-one', argv)
-
-    def test_reset_request_identity_replays_one_control_but_allows_next_generation(self):
-        first = control_request_key(
-            'clear', 'roadmap', ['two', 'one'], source_modified_at=None,
-            request_token='reset-generation-one',
-        )
-        self.assertEqual(first, control_request_key(
-            'clear', 'roadmap', ['one', 'two'], source_modified_at=None,
-            request_token='reset-generation-one',
-        ))
-        self.assertNotEqual(first, control_request_key(
-            'clear', 'roadmap', ['one', 'two'], source_modified_at=None,
-            request_token='reset-generation-two',
-        ))
+        with self.assertRaisesRegex(RuntimeError, 'request_key_conflict:transport-key'):
+            run_manual_order_adapter(
+                'clear', scope='roadmap', ordered_ids=['one'])
 
     def test_legacy_action_groups_move_under_archive(self):
         from workflowy_importer.roadmap_bridge import _mapping_set, GROUP_PREFIX, ROADMAP_ROOT_KEY

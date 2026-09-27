@@ -1,38 +1,23 @@
-"""Submit Workflowy ordering through the fenced C2 control path.
+"""Submit one Workflowy ordering mutation through the fenced C2 control path.
 
-Reset request identity includes the consumed Workflowy control generation. A
-retry of one control is idempotent, while a later recreated control can clear a
-newer manual order even when its entity set is unchanged.
+Semantic/no-change deduplication belongs to the Workflowy projection cache.
+Every invocation that reaches this transport gets a fresh request key so
+renewed supervisor authority cannot collide with an older mutation payload.
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import sys
+import uuid
 
 
 C2_TOOLS = Path('/home/daniele/projects/codex-roadmap/tools')
 
 
-def request_key(
-    action: str,
-    scope: str,
-    ids: list[str],
-    *,
-    source_modified_at: str | None,
-    request_token: str | None,
-) -> str:
-    payload = {
-        'action': action,
-        'scope': scope,
-        'ids': ids if action == 'set' else sorted(ids),
-        'source_modified_at': source_modified_at if action == 'set' else None,
-        'request_token': request_token if action == 'clear' else None,
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
-    return 'c2-workflowy-order-v2-' + hashlib.sha256(encoded).hexdigest()[:32]
+def transport_request_key() -> str:
+    return 'c2-workflowy-order-' + uuid.uuid4().hex
 
 
 def _canonical_modules():
@@ -50,11 +35,9 @@ def main(argv=None) -> int:
     setter = sub.add_parser('set')
     setter.add_argument('--scope', choices=('inbox', 'roadmap'), required=True)
     setter.add_argument('--source-modified-at', required=True)
-    setter.add_argument('--request-token')
     setter.add_argument('ids', nargs='*')
     clearer = sub.add_parser('clear')
     clearer.add_argument('--scope', choices=('inbox', 'roadmap'), required=True)
-    clearer.add_argument('--request-token', required=True)
     clearer.add_argument('ids', nargs='*')
     args = parser.parse_args(argv)
     if len(set(args.ids)) != len(args.ids):
@@ -75,26 +58,14 @@ def main(argv=None) -> int:
         arguments = {'scope': args.scope}
         if args.ids:
             arguments['ids'] = sorted(args.ids)
-    key = request_key(
-        args.action,
-        args.scope,
-        args.ids,
-        source_modified_at=getattr(args, 'source_modified_at', None),
-        request_token=args.request_token,
+    result = c2_control.submit_control(
+        operation=operation,
+        arguments=arguments,
+        request_key=transport_request_key(),
+        supervisor_id=supervisor_id,
+        fencing_token=fencing_token,
+        actor='c2-workflowy-order',
     )
-    try:
-        result = c2_control.submit_control(
-            operation=operation,
-            arguments=arguments,
-            request_key=key,
-            supervisor_id=supervisor_id,
-            fencing_token=fencing_token,
-            actor='c2-workflowy-order',
-        )
-    except Exception as exc:
-        if 'request_key_conflict:' not in str(exc):
-            raise
-        result = {'status': 'ok', 'idempotent': True, 'outcome': 'already_applied'}
     print(json.dumps({'status': 'queued', **result}, sort_keys=True))
     return 0
 

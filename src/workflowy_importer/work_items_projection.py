@@ -319,7 +319,6 @@ def run_manual_order_adapter(
     scope: str,
     ordered_ids: list[str] | None = None,
     source_modified_at: str | None = None,
-    request_token: str | None = None,
     helper: Path | None = DEFAULT_ORDER_HELPER,
 ) -> dict:
     """Invoke the fenced backend helper; never construct a mutation document here."""
@@ -328,10 +327,6 @@ def run_manual_order_adapter(
     argv = ([sys.executable, str(helper)] if helper else
             [sys.executable, '-m', 'workflowy_importer.manual_order_control'])
     argv += [action, '--scope', scope]
-    if request_token:
-        if helper:
-            raise ValueError('legacy_manual_order_helper_has_no_request_token')
-        argv += ['--request-token', request_token]
     if action == 'set':
         if ordered_ids is None or source_modified_at is None:
             raise ValueError('manual_order_set_arguments_required')
@@ -342,8 +337,6 @@ def run_manual_order_adapter(
                           stderr=subprocess.PIPE, check=False)
     if proc.returncode:
         detail = proc.stderr.strip() or proc.stdout.strip()
-        if 'request_key_conflict:' in detail:
-            return {'status': 'ok', 'idempotent': True, 'outcome': 'already_applied'}
         raise RuntimeError(
             'workflowy_order_helper_failed:' + detail)
     try:
@@ -570,7 +563,6 @@ def _sync_items_once(
                 manual_order_adapter(
                     'clear', scope=scope,
                     ordered_ids=[entry['entity_id'] for entry in overrides],
-                    request_token=request_key,
                 )
                 db.execute('INSERT INTO events(source,external_key,payload_json) VALUES(?,?,?)',
                            ('workflowy_manual_order', request_key,
