@@ -197,7 +197,7 @@ def _node_sort_key(entry: tuple[int, dict]) -> tuple[bool, float, int]:
         missing = True
     else:
         missing = False
-    return (True, float(index), index) if missing else (False, -priority, index)
+    return missing, priority, index
 
 
 def _vertical_ids(nodes: dict[str, dict], root: str, canonical: dict[str, str]) -> list[str]:
