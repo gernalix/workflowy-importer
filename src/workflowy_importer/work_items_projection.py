@@ -623,6 +623,22 @@ def _sync_items_once(
             )
             for item_id, node_id in canonical.items() if item_id in last_parents
         )
+        canonical_clear = bool(canonical) and all(
+            _manual_rank(scope_rows[scope][entity_id]) is None
+            for entity_id in canonical
+        )
+        if state.get('force_ai'):
+            stable_now = (
+                canonical_clear
+                and state_is_current
+                and isinstance(last_order, list)
+                and current_order == last_order
+                and not parent_changed
+            )
+            state['force_ai_stable_count'] = (
+                int(state.get('force_ai_stable_count') or 0) + 1
+                if stable_now else 0
+            )
 
         reset_node = nodes.get(reset_ids[scope])
         reset_requested = bool(reset_node and reset_node.get('completed'))
