@@ -52,8 +52,14 @@ LEGACY_GROUP_KEYS = ("pending", "failed", "cancelled", "superseded")
 PROMPT_NODE_RE = re.compile(r"^\[(\d{6})\]\s")
 
 
-def roadmap_projection_note(*, pending: bool, source: str | None = None) -> str:
+def roadmap_projection_note(
+    *, pending: bool, source: str | None = None, error: str | None = None,
+) -> str:
     state = (
+        "⚠ Proiezione Workflowy non completata: la vista non è affidabile. "
+        f"Rieseguire roadmap-sync. Diagnostica: {error}"
+        if error
+        else
         "⏳ Proiezione Workflowy in corso: la vista potrebbe non includere ancora "
         "l'ultima mutation applicata."
         if pending
