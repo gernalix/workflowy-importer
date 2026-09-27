@@ -276,6 +276,24 @@ class ApiRetrySafetyTests(unittest.TestCase):
         self.assertEqual(node["id"], "abc")
         self.assertEqual(calls, 2)
 
+    def test_move_node_retries_rate_limit(self) -> None:
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return httpx.Response(429, headers={"Retry-After": "1"})
+            return httpx.Response(200, json={})
+
+        with self._client_with_transport(handler) as client, patch(
+            "workflowy_importer.api.time.sleep"
+        ) as sleep:
+            client.move_node("abc", "parent", position="bottom")
+
+        self.assertEqual(calls, 2)
+        sleep.assert_called_once_with(1.0)
+
     def test_node_exists_uses_status_code_not_error_string(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(404, text="missing")

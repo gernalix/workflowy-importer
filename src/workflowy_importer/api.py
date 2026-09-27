@@ -180,6 +180,7 @@ class WorkflowyClient:
                 "parent_id": parent_id,
                 "position": position,
             },
+            retry_safe=True,
         )
 
     def mirror_node(
