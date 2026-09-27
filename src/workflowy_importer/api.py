@@ -81,14 +81,12 @@ class WorkflowyClient:
                     if retry_after:
                         delay = float(retry_after)
                     elif response.status_code == 429:
-                        # Workflowy's export endpoint is documented at one
-                        # request per minute. Without Retry-After, short
-                        # exponential backoff can exhaust every retry inside
-                        # the same rate-limit window.
-                        delay = 60.0
+                        payload = response.json()
+                        body_retry_after = payload.get("retry_after") or payload.get("retryAfter")
+                        delay = float(body_retry_after) if body_retry_after is not None else 60.0
                     else:
                         delay = min(2**attempt, 8)
-                except ValueError:
+                except (ValueError, TypeError, httpx.DecodingError):
                     delay = 60.0 if response.status_code == 429 else min(2**attempt, 8)
                 time.sleep(max(0.0, min(delay, 60.0)))
                 continue

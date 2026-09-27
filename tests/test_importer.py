@@ -257,6 +257,28 @@ class ApiRetrySafetyTests(unittest.TestCase):
         self.assertEqual(calls, 2)
         sleep.assert_called_once_with(60.0)
 
+    def test_429_uses_json_retry_after_when_header_is_missing(self) -> None:
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return httpx.Response(429, json={"error": "Rate limit exceeded", "retry_after": 1})
+            return httpx.Response(
+                200,
+                json={"node": {"id": "abc", "name": "ok"}},
+            )
+
+        with self._client_with_transport(handler) as client, patch(
+            "workflowy_importer.api.time.sleep"
+        ) as sleep:
+            node = client.get_node("abc")
+
+        self.assertEqual(node["id"], "abc")
+        self.assertEqual(calls, 2)
+        sleep.assert_called_once_with(1.0)
+
     def test_get_node_retries_safe_transient_failure(self) -> None:
         calls = 0
 
