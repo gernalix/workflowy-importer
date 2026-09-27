@@ -1177,7 +1177,14 @@ def sync_roadmap(
     from .work_items_projection import read_items, sync_items
     work_items = read_items(raw)
     if work_items is not None:
-        return sync_items(client, db, work_items, parent=parent)
+        return sync_items(
+            client,
+            db,
+            work_items,
+            parent=parent,
+            submitter=submitter,
+            roadmap_dir=roadmap_dir,
+        )
     prompts = read_roadmap_db(raw)
     prompt_by_id = {p.prompt_id: p for p in prompts}
     # Compatibility argument only. Workflowy projects canonical roadmap state and
