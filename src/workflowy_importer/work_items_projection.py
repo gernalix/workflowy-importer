@@ -679,7 +679,12 @@ def _sync_items_once(
                                    'Completa questa azione per rimuovere l’ordine manuale dello scope.',
                                    'todo', metadata={'reset_generation': request_key})
             state.pop('pending_order', None)
-            state['force_ai'] = True
+            if overrides:
+                state['force_ai'] = True
+                state['force_ai_stable_count'] = 0
+            else:
+                state.pop('force_ai', None)
+                state.pop('force_ai_stable_count', None)
         elif parent_changed:
             warnings += 1
         elif (not state.get('force_ai')
@@ -703,6 +708,7 @@ def _sync_items_once(
                 mutations_submitted += 1
             state['pending_order'] = current_order
             state.pop('force_ai', None)
+            state.pop('force_ai_stable_count', None)
         pending_orders[scope] = state.get('pending_order') if isinstance(state.get('pending_order'), list) else None
         _mapping_set(db, scope_key, scope_ids[scope], state)
 
@@ -829,10 +835,12 @@ def _sync_items_once(
                         and str(_manual_source(scope_rows[scope][entity_id]) or '').casefold() == 'workflowy'
                         for entity_id in order_canonical)):
             state.pop('pending_order', None)
-        if state.get('force_ai') and canonical and all(
-                _manual_rank(scope_rows[scope][entity_id]) is None
-                for entity_id in canonical):
+        if (state.get('force_ai') and canonical
+                and all(_manual_rank(scope_rows[scope][entity_id]) is None
+                        for entity_id in canonical)
+                and int(state.get('force_ai_stable_count') or 0) >= 2):
             state.pop('force_ai', None)
+            state.pop('force_ai_stable_count', None)
         _mapping_set(db, SCOPE_PREFIX + scope, scope_ids[scope], state)
     put(ROADMAP_ROOT_KEY, parent, 'Codex', roadmap_projection_note(pending=False, source=ROOT_SOURCE), 'h1', count_update=False)
     db.commit()
