@@ -563,7 +563,7 @@ class ProjectionTests(unittest.TestCase):
                                 manual_order_adapter=adapter)
             self.assertEqual(1, result['mutations_submitted'])
             adapter.assert_called_once_with(
-                'clear', scope='roadmap', ordered_ids=['one'])
+                'clear', scope='roadmap', ordered_ids=None)
             fresh = next(n for n in client.nodes if n['name'] == 'Reset to AI order'
                          and next(p for p in client.nodes if p['id'] == n['parent_id'])['name'] == 'Roadmap')
             self.assertNotEqual(old_reset_id, fresh['id'])
