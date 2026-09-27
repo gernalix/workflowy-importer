@@ -340,6 +340,8 @@ def _compact_issue_title(description: object, *, limit: int = 52) -> str:
         r'Amendment to the mass ChatGPT retrospective task\s*\([^)]*\):)\s*',
         '', text, flags=re.IGNORECASE,
     )
+    text = re.sub(r'^GitHub capture issue\b.*?\bfor\b\s*(?:is\s+)?', '', text,
+                  flags=re.IGNORECASE)
     text = re.sub(r'\s+', ' ', text).strip(' \t\r\n-:;,.')
     if not text:
         return 'Issue da triagiare'
