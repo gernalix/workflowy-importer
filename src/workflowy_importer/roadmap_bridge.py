@@ -1172,9 +1172,15 @@ def sync_roadmap(
     pipeline_status: dict[str, dict] | None = None,
     ccs_bindings: dict[str, dict] | None = None,
     ready_notifier: Callable[[RoadmapPrompt], bool] | None = None,
+    manual_order_adapter: Callable[..., dict] | None = None,
 ) -> dict[str, int]:
     raw = raw_roadmap_db if raw_roadmap_db is not None else fetch_remote_roadmap_db(repository, branch)
-    from .work_items_projection import read_items, sync_items
+    from .work_items_projection import (
+        read_issue_inbox,
+        read_items,
+        run_manual_order_adapter,
+        sync_items,
+    )
     work_items = read_items(raw)
     if work_items is not None:
         return sync_items(
@@ -1182,8 +1188,8 @@ def sync_roadmap(
             db,
             work_items,
             parent=parent,
-            submitter=submitter,
-            roadmap_dir=roadmap_dir,
+            issues=read_issue_inbox(raw),
+            manual_order_adapter=manual_order_adapter or run_manual_order_adapter,
         )
     prompts = read_roadmap_db(raw)
     prompt_by_id = {p.prompt_id: p for p in prompts}

@@ -1,10 +1,16 @@
 from contextlib import closing
 import sqlite3
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from workflowy_importer.cache import connect
-from workflowy_importer.work_items_projection import read_items, sync_items, item_text
+from workflowy_importer.work_items_projection import (
+    item_text,
+    read_issue_inbox,
+    read_items,
+    run_manual_order_adapter,
+    sync_items,
+)
 from test_roadmap_bridge import FakeClient, roadmap_bytes
 
 
@@ -15,6 +21,14 @@ def item(key, **kw):
                  next_action='Run check', blocker=None, project_name='Example',
                  executor_policy='rdc', tags=['check'], dependencies=[], unlocks=[],
                  sort_order=None, created_at='2026-01-01T00:00:00Z')
+    value.update(kw)
+    return value
+
+
+def issue(key, **kw):
+    value = dict(issue_id=key, description='Issue '+key, observed_at_ms=1,
+                 manual_rank=None, manual_order_source=None,
+                 manual_order_source_modified_at=None)
     value.update(kw)
     return value
 
@@ -82,7 +96,8 @@ class ProjectionTests(unittest.TestCase):
             conn.executescript('''
                 CREATE TABLE work_items(work_item_id TEXT,parent_id TEXT,title TEXT,status TEXT,
                     sort_order INTEGER,created_at TEXT,updated_at TEXT,project_name TEXT,repo TEXT,
-                    manual_rank INTEGER,manual_source TEXT,manual_source_modified_at TEXT);
+                    manual_rank INTEGER,manual_order_source TEXT,
+                    manual_order_source_modified_at TEXT);
                 INSERT INTO work_items VALUES
                     ('one',NULL,'One','pending',1,'2026-01-01T00:00:00Z',
                      '2026-01-01T00:00:00Z','C2','repo',2,'workflowy','wf-2'),
@@ -99,7 +114,8 @@ class ProjectionTests(unittest.TestCase):
             rows = read_items(conn.serialize())
         self.assertEqual(['two', 'one'], [row['work_item_id'] for row in rows])
         self.assertEqual(('workflowy', 'wf-1'),
-                         (rows[0]['manual_source'], rows[0]['manual_source_modified_at']))
+                         (rows[0]['manual_order_source'],
+                          rows[0]['manual_order_source_modified_at']))
 
     def test_tree_reuses_legacy_prompt_and_second_sync_is_noop(self):
         from workflowy_importer.roadmap_bridge import _mapping_set
@@ -170,57 +186,95 @@ class ProjectionTests(unittest.TestCase):
             self.assertEqual(task['id'],history['parent_id'])
             self.assertIn('chatgpt · failed · 10',history['note'])
             self.assertIn('https://chatgpt.com/c/old',history['note'])
-    def test_recent_pending_intake_is_visible_once_without_becoming_ready(self):
+    def test_non_runnable_work_item_stays_in_roadmap_not_issue_inbox(self):
         client = FakeClient()
-        recent = item('new', group='intake', execution_configured=False)
+        waiting = item('new', group='waiting', execution_configured=False)
         with closing(connect(':memory:')) as db:
-            sync_items(client, db, [recent], parent='inbox')
-            intake = next(n for n in client.nodes if n['name'] == 'Inbox execution order')
-            projected = [n for n in client.nodes if n['name'].startswith('☐ new')]
-            self.assertEqual(1, len(projected))
-            self.assertEqual(intake['id'], projected[0]['parent_id'])
-            self.assertIn('mancano dati di esecuzione', projected[0]['note'])
-            self.assertNotIn(projected[0]['id'], [
-                n['id'] for n in client.nodes if n['parent_id'] != intake['id']
-            ])
+            sync_items(client, db, [waiting], parent='inbox')
+            projected = next(n for n in client.nodes if n['name'].startswith('☐ new'))
+            parent = next(n for n in client.nodes if n['id'] == projected['parent_id'])
+            self.assertEqual('Waiting', parent['name'])
+            inbox = next(n for n in client.nodes if n['name'] == 'Inbox execution order')
+            self.assertNotEqual(inbox['id'], projected['parent_id'])
+
+    def test_reader_and_projection_use_real_issue_inbox_rows(self):
+        with closing(sqlite3.connect(':memory:')) as conn:
+            conn.executescript('''
+                CREATE TABLE issue_inbox(issue_id TEXT,description TEXT,repo TEXT,
+                    observed_at_ms INTEGER,state TEXT,manual_rank INTEGER,
+                    manual_order_source TEXT,manual_order_source_modified_at TEXT);
+                INSERT INTO issue_inbox VALUES
+                    ('issue:one','First issue','repo/a',10,'pending',2,'workflowy','wf-2'),
+                    ('issue:two','Second issue','repo/b',20,'pending',1,'workflowy','wf-1');
+                CREATE VIEW v_issue_inbox_pending_ordered AS
+                    SELECT * FROM issue_inbox WHERE state='pending'
+                    ORDER BY manual_rank,observed_at_ms,issue_id;
+            ''')
+            rows = read_issue_inbox(conn.serialize())
+        self.assertEqual(['issue:two', 'issue:one'], [row['issue_id'] for row in rows])
+        client = FakeClient()
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, [item('roadmap-only')], issues=rows, parent='inbox')
+        inbox = next(n for n in client.nodes if n['name'] == 'Inbox execution order')
+        visible = [n for n in client.nodes if n.get('parent_id') == inbox['id']
+                   and n['name'].startswith('☐')]
+        self.assertEqual(['☐ Second issue', '☐ First issue'],
+                         [node['name'] for node in visible])
+        self.assertIn('C2_ISSUE_ID:issue:two', visible[0]['note'])
+        self.assertIn('Manual rank: 1', visible[0]['note'])
 
     def test_genuine_reorder_submits_one_bulk_mutation_and_repeated_sync_is_quiet(self):
         client = FakeClient()
-        submitted = []
+        adapter = Mock(return_value={'status':'ok'})
         rows = [item('one', sort_order=1), item('two', sort_order=2)]
         with closing(connect(':memory:')) as db:
             sync_items(client, db, rows, parent='inbox',
-                       submitter=lambda doc, key: submitted.append((doc, key)) or {'status':'ok'})
+                       manual_order_adapter=adapter)
             ready = next(n for n in client.nodes if n['name'] == 'Ready')
             second = next(n for n in client.nodes if n['name'].startswith('☐ two'))
             client.move_node(second['id'], ready['id'], position='top')
             result = sync_items(client, db, rows, parent='inbox',
-                                submitter=lambda doc, key: submitted.append((doc, key)) or {'status':'ok'})
+                                manual_order_adapter=adapter)
             self.assertEqual(1, result['mutations_submitted'])
-            operation = submitted[0][0]['operations'][0]
-            self.assertEqual('set_manual_order', operation['op'])
-            self.assertEqual('roadmap', operation['scope'])
-            self.assertEqual(['two', 'one'], operation['ordered_ids'])
-            self.assertEqual('workflowy', operation['source'])
+            adapter.assert_called_once_with(
+                'set', scope='roadmap', ordered_ids=['two', 'one'],
+                source_modified_at='1790000000')
             again = sync_items(client, db, rows, parent='inbox',
-                               submitter=lambda doc, key: submitted.append((doc, key)) or {'status':'ok'})
+                               manual_order_adapter=adapter)
             self.assertEqual(0, again['mutations_submitted'])
-            self.assertEqual(1, len(submitted))
+            self.assertEqual(1, adapter.call_count)
+
+    def test_issue_inbox_reorder_sends_only_real_issue_ids(self):
+        client = FakeClient()
+        adapter = Mock(return_value={'status':'ok'})
+        issues = [issue('issue:one', observed_at_ms=1), issue('issue:two', observed_at_ms=2)]
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, [item('work-item')], issues=issues, parent='inbox',
+                       manual_order_adapter=adapter)
+            inbox = next(n for n in client.nodes if n['name'] == 'Inbox execution order')
+            second = next(n for n in client.nodes if 'Issue issue:two' in n['name'])
+            client.move_node(second['id'], inbox['id'], position='top')
+            sync_items(client, db, [item('work-item')], issues=issues, parent='inbox',
+                       manual_order_adapter=adapter)
+        adapter.assert_called_once_with(
+            'set', scope='inbox', ordered_ids=['issue:two', 'issue:one'],
+            source_modified_at='1790000000')
+        self.assertNotIn('work-item', adapter.call_args.kwargs['ordered_ids'])
 
     def test_renderer_refresh_changes_order_without_echo_mutation(self):
         client = FakeClient()
-        submitted = []
+        adapter = Mock(return_value={'status':'ok'})
         with closing(connect(':memory:')) as db:
             sync_items(client, db, [item('one', sort_order=1), item('two', sort_order=2)],
-                       parent='inbox', submitter=lambda doc, key: submitted.append((doc,key)) or {'status':'ok'})
+                       parent='inbox', manual_order_adapter=adapter)
             refreshed = [
-                item('one', sort_order=1, manual_rank=2, manual_source='workflowy'),
-                item('two', sort_order=2, manual_rank=1, manual_source='workflowy'),
+                item('one', sort_order=1, manual_rank=2, manual_order_source='workflowy'),
+                item('two', sort_order=2, manual_rank=1, manual_order_source='workflowy'),
             ]
             result = sync_items(client, db, refreshed, parent='inbox',
-                                submitter=lambda doc, key: submitted.append((doc,key)) or {'status':'ok'})
+                                manual_order_adapter=adapter)
             self.assertEqual(0, result['mutations_submitted'])
-            self.assertEqual([], submitted)
+            adapter.assert_not_called()
             ready = next(n for n in client.nodes if n['name'] == 'Ready')
             visible = [n['name'].split()[-1] for n in client.nodes
                        if n.get('parent_id') == ready['id'] and n['name'].startswith('☐')]
@@ -228,40 +282,39 @@ class ProjectionTests(unittest.TestCase):
 
     def test_reset_submits_clear_for_scope_only(self):
         client = FakeClient()
-        submitted = []
+        adapter = Mock(return_value={'status':'ok'})
         with closing(connect(':memory:')) as db:
             sync_items(client, db, [item('one')], parent='inbox',
-                       submitter=lambda doc, key: submitted.append((doc,key)) or {'status':'ok'})
+                       manual_order_adapter=adapter)
             reset = next(n for n in client.nodes if n['name'] == 'Reset to AI order'
                          and next(p for p in client.nodes if p['id'] == n['parent_id'])['name'] == 'Roadmap')
             reset['completed'] = True
             result = sync_items(client, db, [item('one')], parent='inbox',
-                                submitter=lambda doc, key: submitted.append((doc,key)) or {'status':'ok'})
+                                manual_order_adapter=adapter)
             self.assertEqual(1, result['mutations_submitted'])
-            self.assertEqual({'op':'clear_manual_order', 'scope':'roadmap'},
-                             submitted[0][0]['operations'][0])
+            adapter.assert_called_once_with('clear', scope='roadmap')
 
     def test_drag_across_status_section_is_reverted_without_mutation(self):
         client = FakeClient()
-        submitted = []
+        adapter = Mock(return_value={'status':'ok'})
         with closing(connect(':memory:')) as db:
             rows = [item('one')]
             sync_items(client, db, rows, parent='inbox',
-                       submitter=lambda doc, key: submitted.append((doc,key)) or {'status':'ok'})
+                       manual_order_adapter=adapter)
             task = next(n for n in client.nodes if n['name'].startswith('☐ one'))
             blocked = next(n for n in client.nodes if n['name'] == 'Blocked / dependency context')
             client.move_node(task['id'], blocked['id'], position='top')
             result = sync_items(client, db, rows, parent='inbox',
-                                submitter=lambda doc, key: submitted.append((doc,key)) or {'status':'ok'})
+                                manual_order_adapter=adapter)
             self.assertEqual(0, result['mutations_submitted'])
             self.assertEqual(1, result['warnings'])
             self.assertEqual('Ready', next(
                 n for n in client.nodes if n['id'] == task['parent_id'])['name'])
-            self.assertEqual([], submitted)
+            adapter.assert_not_called()
 
     def test_dag_mirror_is_not_sent_in_ordered_ids(self):
         client = FakeClient()
-        submitted = []
+        adapter = Mock(return_value={'status':'ok'})
         dep1, dep2 = item('dep1'), item('dep2')
         target = item('target', dependencies=[
             {'work_item_id':'dep1','title':'dep1','status':'pending'},
@@ -270,44 +323,58 @@ class ProjectionTests(unittest.TestCase):
         rows = [dep1, dep2, target]
         with closing(connect(':memory:')) as db:
             sync_items(client, db, rows, parent='inbox',
-                       submitter=lambda doc, key: submitted.append((doc,key)) or {'status':'ok'})
+                       manual_order_adapter=adapter)
             mirror = next(n for n in client.nodes if n['name'].startswith('↪ Depends on'))
             self.assertIn('C2_REFERENCE_ID: dep2', mirror['note'])
             ready = next(n for n in client.nodes if n['name'] == 'Ready')
             task = next(n for n in client.nodes if n['name'].startswith('☐ target'))
             client.move_node(task['id'], ready['id'], position='top')
             sync_items(client, db, rows, parent='inbox',
-                       submitter=lambda doc, key: submitted.append((doc,key)) or {'status':'ok'})
-            ordered_ids = submitted[0][0]['operations'][0]['ordered_ids']
+                       manual_order_adapter=adapter)
+            ordered_ids = adapter.call_args.kwargs['ordered_ids']
             self.assertEqual({'dep1','dep2','target'}, set(ordered_ids))
             self.assertNotIn(mirror['id'], ordered_ids)
 
     def test_manual_rank_round_trip_survives_refresh(self):
         client = FakeClient()
-        submitted = []
+        adapter = Mock(return_value={'status':'ok'})
         initial = [item('one', sort_order=1), item('two', sort_order=2)]
         with closing(connect(':memory:')) as db:
             sync_items(client, db, initial, parent='inbox',
-                       submitter=lambda doc, key: submitted.append((doc,key)) or {'status':'ok'})
+                       manual_order_adapter=adapter)
             ready = next(n for n in client.nodes if n['name'] == 'Ready')
             two = next(n for n in client.nodes if n['name'].startswith('☐ two'))
             client.move_node(two['id'], ready['id'], position='top')
             sync_items(client, db, initial, parent='inbox',
-                       submitter=lambda doc, key: submitted.append((doc,key)) or {'status':'ok'})
+                       manual_order_adapter=adapter)
             ranked = [
-                item('one', sort_order=1, manual_rank=2, manual_source='workflowy',
-                     manual_source_modified_at=1_790_000_000),
-                item('two', sort_order=2, manual_rank=1, manual_source='workflowy',
-                     manual_source_modified_at=1_790_000_000),
+                item('one', sort_order=1, manual_rank=2, manual_order_source='workflowy',
+                     manual_order_source_modified_at='1790000000'),
+                item('two', sort_order=2, manual_rank=1, manual_order_source='workflowy',
+                     manual_order_source_modified_at='1790000000'),
             ]
             sync_items(client, db, ranked, parent='inbox',
-                       submitter=lambda doc, key: submitted.append((doc,key)) or {'status':'ok'})
+                       manual_order_adapter=adapter)
             sync_items(client, db, ranked, parent='inbox',
-                       submitter=lambda doc, key: submitted.append((doc,key)) or {'status':'ok'})
+                       manual_order_adapter=adapter)
             visible = [n['name'].split()[-1] for n in client.nodes
                        if n.get('parent_id') == ready['id'] and n['name'].startswith('☐')]
             self.assertEqual(['two','one'], visible)
-            self.assertEqual(1, len(submitted))
+            self.assertEqual(1, adapter.call_count)
+
+    @patch('workflowy_importer.work_items_projection.subprocess.run')
+    def test_helper_adapter_builds_argv_and_never_builds_raw_mutation(self, run):
+        run.return_value = Mock(returncode=0, stdout='{"status":"ok"}', stderr='')
+        result = run_manual_order_adapter(
+            'set', scope='inbox', ordered_ids=['issue:two', 'issue:one'],
+            source_modified_at=1790000000)
+        self.assertEqual({'status':'ok'}, result)
+        argv = run.call_args.args[0]
+        self.assertEqual('set', argv[2])
+        self.assertEqual(['--scope', 'inbox'], argv[3:5])
+        self.assertEqual('1790000000', argv[6])
+        self.assertEqual(['issue:two', 'issue:one'], argv[7:])
+        self.assertNotIn('codex-roadmap.mutation.v1', ' '.join(argv))
 
     def test_legacy_action_groups_move_under_archive(self):
         from workflowy_importer.roadmap_bridge import _mapping_set, GROUP_PREFIX, ROADMAP_ROOT_KEY
