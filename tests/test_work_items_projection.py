@@ -598,6 +598,45 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual('clear', adapter.call_args.args[0])
         self.assertTrue(__import__('json').loads(mapping['metadata_json']).get('force_ai'))
 
+    def test_reset_waits_for_two_stable_clear_readbacks_before_releasing_force_ai(self):
+        client = FakeClient()
+        adapter = Mock(return_value={'status': 'ok'})
+        ranked = [
+            item('one', sort_order=1, manual_rank=2, manual_order_source='workflowy',
+                 manual_order_source_modified_at='old-generation'),
+            item('two', sort_order=2, manual_rank=1, manual_order_source='workflowy',
+                 manual_order_source_modified_at='old-generation'),
+        ]
+        cleared = [item('one', sort_order=1), item('two', sort_order=2)]
+        with closing(connect(':memory:')) as db:
+            sync_items(client, db, ranked, parent='inbox', manual_order_adapter=adapter)
+            roadmap = next(n for n in client.nodes if n['name'] == 'Roadmap')
+            reset = next(n for n in client.nodes if n['name'] == 'Reset to AI order'
+                         and n.get('parent_id') == roadmap['id'])
+            reset['completed'] = True
+            first = sync_items(client, db, ranked, parent='inbox', manual_order_adapter=adapter)
+            second = sync_items(client, db, cleared, parent='inbox', manual_order_adapter=adapter)
+            ready = next(n for n in client.nodes if n['name'] == 'Ready')
+            two = next(n for n in client.nodes if n['name'].startswith('☐ two'))
+            client.move_node(two['id'], ready['id'], position='top')
+            third = sync_items(client, db, cleared, parent='inbox', manual_order_adapter=adapter)
+            fourth = sync_items(client, db, cleared, parent='inbox', manual_order_adapter=adapter)
+            fifth = sync_items(client, db, cleared, parent='inbox', manual_order_adapter=adapter)
+            mapping = db.execute(
+                "SELECT metadata_json FROM mappings WHERE external_key=?",
+                ('__manual_scope__:roadmap',),
+            ).fetchone()
+        self.assertEqual([1, 0, 0, 0, 0], [
+            first['mutations_submitted'], second['mutations_submitted'],
+            third['mutations_submitted'], fourth['mutations_submitted'],
+            fifth['mutations_submitted'],
+        ])
+        self.assertEqual(1, adapter.call_count)
+        self.assertEqual('clear', adapter.call_args.args[0])
+        metadata = __import__('json').loads(mapping['metadata_json'])
+        self.assertNotIn('force_ai', metadata)
+        self.assertNotIn('force_ai_stable_count', metadata)
+
     def test_repeated_reset_without_override_is_consumed_as_safe_noop(self):
         client = FakeClient()
         adapter = Mock(side_effect=AssertionError('backend clear must not run'))
