@@ -243,6 +243,15 @@ def _state_fingerprint(order: list[str], expected_parents: dict[str, str]) -> st
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def _surviving_order_changed(current: list[str], previous: list[str]) -> bool:
+    """Detect a reorder independently from canonical membership churn."""
+    surviving = set(current) & set(previous)
+    if len(surviving) < 2:
+        return False
+    return ([entity_id for entity_id in current if entity_id in surviving]
+            != [entity_id for entity_id in previous if entity_id in surviving])
+
+
 def _source_modified_at(nodes: dict[str, dict], canonical: dict[str, str]) -> object:
     values = [nodes[node_id].get('modifiedAt') for node_id in canonical.values()
               if node_id in nodes and nodes[node_id].get('modifiedAt') is not None]
@@ -689,8 +698,7 @@ def _sync_items_once(
             warnings += 1
         elif (not state.get('force_ai')
               and state_is_current and isinstance(last_order, list)
-              and set(current_order) == set(last_order)
-              and current_order != last_order):
+              and _surviving_order_changed(current_order, last_order)):
             modified = str(_source_modified_at(nodes, order_canonical))
             request_key = _semantic_event_key(
                 'set', scope,
