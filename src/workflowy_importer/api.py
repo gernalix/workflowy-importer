@@ -48,9 +48,10 @@ class WorkflowyClient:
         path: str,
         *,
         retry_safe: bool = False,
+        retry_rate_limited: bool = False,
         **kwargs,
     ) -> httpx.Response:
-        attempts = self.max_retries + 1 if retry_safe else 1
+        attempts = self.max_retries + 1 if retry_safe or retry_rate_limited else 1
         last_error: Exception | None = None
         for attempt in range(attempts):
             try:
@@ -59,7 +60,7 @@ class WorkflowyClient:
                 )
             except httpx.RequestError as exc:
                 last_error = exc
-                if attempt + 1 >= attempts:
+                if not retry_safe or attempt + 1 >= attempts:
                     break
                 time.sleep(min(2**attempt, 8))
                 continue
@@ -73,7 +74,7 @@ class WorkflowyClient:
             }
             if (
                 retryable_status
-                and retry_safe
+                and (retry_safe or (retry_rate_limited and response.status_code == 429))
                 and attempt + 1 < attempts
             ):
                 retry_after = response.headers.get("Retry-After")
@@ -149,7 +150,8 @@ class WorkflowyClient:
         if not payload:
             return
         self._request(
-            "POST", f"/nodes/{node_id}", json=payload
+            "POST", f"/nodes/{node_id}", json=payload,
+            retry_rate_limited=True,
         )
 
     def complete_node(self, node_id: str) -> None:
