@@ -316,6 +316,39 @@ class ApiRetrySafetyTests(unittest.TestCase):
         self.assertEqual(calls, 2)
         sleep.assert_called_once_with(1.0)
 
+    def test_update_node_retries_429_without_retrying_ambiguous_failures(self) -> None:
+        calls = 0
+
+        def rate_limited(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return httpx.Response(429, headers={"Retry-After": "1"})
+            return httpx.Response(200, json={})
+
+        with self._client_with_transport(rate_limited) as client, patch(
+            "workflowy_importer.api.time.sleep"
+        ) as sleep:
+            client.update_node("abc", note="stable")
+        self.assertEqual(calls, 2)
+        sleep.assert_called_once_with(1.0)
+
+        for response in (httpx.Response(503, text="uncertain"),
+                         httpx.ConnectError("uncertain")):
+            calls = 0
+
+            def ambiguous(request: httpx.Request) -> httpx.Response:
+                nonlocal calls
+                calls += 1
+                if isinstance(response, Exception):
+                    raise response
+                return response
+
+            with self._client_with_transport(ambiguous) as client:
+                with self.assertRaises(WorkflowyAPIError):
+                    client.update_node("abc", note="stable")
+            self.assertEqual(calls, 1)
+
     def test_node_exists_uses_status_code_not_error_string(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(404, text="missing")
