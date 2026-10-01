@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -9,104 +8,6 @@ from pathlib import Path
 
 from .api import WorkflowyAPIError, WorkflowyClient
 from .automation import classify_with_optional_command, load_rules
-
-
-
-DEFAULT_ROADMAP_DIR = Path("~/projects/codex-roadmap").expanduser()
-
-
-def _roadmap_prompt_text(roadmap_dir: Path, prompt_id: str) -> tuple[str, str] | None:
-    if not re.fullmatch(r"\d{6}", prompt_id):
-        return None
-    roadmap_dir = roadmap_dir.expanduser()
-    db_path = roadmap_dir / "roadmap.sqlite"
-    if not db_path.is_file():
-        return None
-    conn = sqlite3.connect(f"file:{db_path.resolve()}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    try:
-        has_materializations = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='prompt_materializations'"
-        ).fetchone()
-        if has_materializations:
-            row = conn.execute(
-                "SELECT body FROM prompt_materializations WHERE prompt_id=?",
-                (prompt_id,),
-            ).fetchone()
-            if row and str(row["body"] or "").strip():
-                return str(row["body"]), "roadmap.sqlite"
-        row = conn.execute(
-            "SELECT current_path FROM prompts WHERE prompt_id=?",
-            (prompt_id,),
-        ).fetchone()
-    finally:
-        conn.close()
-    if not row:
-        return None
-    rel = str(row["current_path"] or "")
-    if not rel:
-        return None
-    path = (roadmap_dir / rel).resolve()
-    try:
-        path.relative_to(roadmap_dir.resolve())
-    except ValueError:
-        return None
-    if not path.is_file():
-        return None
-    return path.read_text(encoding="utf-8"), rel
-
-
-def _roadmap_prompt_metadata(roadmap_dir: Path, prompt_id: str) -> dict:
-    if not re.fullmatch(r"\d{6}", prompt_id):
-        return {}
-    db_path = roadmap_dir.expanduser() / "roadmap.sqlite"
-    if not db_path.is_file():
-        return {}
-    conn = sqlite3.connect(f"file:{db_path.resolve()}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    try:
-        row = conn.execute(
-            """SELECT project_id,project_name,repo,chat_guidance,prompt_type,model,reasoning
-               FROM prompts WHERE prompt_id=?""",
-            (prompt_id,),
-        ).fetchone()
-    except sqlite3.OperationalError:
-        return {}
-    finally:
-        conn.close()
-    if not row:
-        return {}
-    return {key: row[key] for key in row.keys()}
-
-
-def _roadmap_fix_packet(roadmap_dir: Path, prompt_id: str) -> dict | None:
-    """Read the latest publisher packet from the canonical roadmap DB."""
-    if not re.fullmatch(r"\d{6}", prompt_id):
-        return None
-    db_path = roadmap_dir.expanduser() / "roadmap.sqlite"
-    if not db_path.is_file():
-        return None
-    conn = sqlite3.connect(f"file:{db_path.resolve()}?mode=ro", uri=True)
-    try:
-        row = conn.execute(
-            "SELECT summary FROM analyses WHERE prompt_id=? AND source_ref LIKE 'codex-usage:%' "
-            "ORDER BY analyzed_at DESC,analysis_id DESC LIMIT 1",
-            (prompt_id,),
-        ).fetchone()
-    except sqlite3.OperationalError:
-        return None
-    finally:
-        conn.close()
-    if not row:
-        return None
-    try:
-        packet = json.loads(str(row[0] or ""))
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(packet, dict) or packet.get("prompt_id") != prompt_id:
-        return None
-    return packet
-
 
 def _ensure_mirror_parent(client: WorkflowyClient) -> str:
     try:
@@ -146,7 +47,6 @@ def serve(
     host: str = "127.0.0.1",
     port: int = 8765,
     rules_path: Path | str,
-    roadmap_dir: Path = DEFAULT_ROADMAP_DIR,
 ) -> int:
     del db
     if host not in {"127.0.0.1", "::1", "localhost"}:
@@ -174,32 +74,6 @@ def serve(
         def do_GET(self) -> None:
             if self.path == "/health":
                 self._reply(200, {"status": "ok"})
-                return
-            match = re.fullmatch(r"/roadmap/prompt/(\d{6})", self.path)
-            if match:
-                found = _roadmap_prompt_text(roadmap_dir, match.group(1))
-                if not found:
-                    self._reply(404, {"error": "prompt not found"})
-                    return
-                prompt_text, source = found
-                metadata = _roadmap_prompt_metadata(roadmap_dir, match.group(1))
-                self._reply(
-                    200,
-                    {
-                        "prompt_id": match.group(1),
-                        "prompt_text": prompt_text,
-                        "source": source,
-                        **metadata,
-                    },
-                )
-                return
-            match = re.fullmatch(r"/roadmap/fix-packet/(\d{6})", self.path)
-            if match:
-                packet = _roadmap_fix_packet(roadmap_dir, match.group(1))
-                if not packet:
-                    self._reply(404, {"error": "fix packet not found"})
-                    return
-                self._reply(200, packet)
                 return
             self._reply(404, {"error": "not found"})
 

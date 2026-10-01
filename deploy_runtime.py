@@ -12,9 +12,6 @@ UNIT_SOURCE = ROOT / "deploy" / "systemd"
 UNITS = tuple(sorted(path.name for path in UNIT_SOURCE.iterdir() if path.suffix in {".service", ".timer", ".path"}))
 CORE_UNITS = (
     "workflowy-bridge.service",
-    "workflowy-roadmap-sync.timer",
-    "workflowy-roadmap-sync.path",
-    "workflowy-c2-daily-mirror.timer",
     "workflowy-chatgpt-live.timer",
 )
 
@@ -44,11 +41,9 @@ def main() -> int:
         checked("systemctl", "--user", "enable", "--now", unit)
 
     # The long-lived bridge must reload Python code from the freshly updated
-    # checkout. The one-shot roadmap sync is kicked immediately so the
-    # WorkFlowy dashboard does not wait for the next timer tick.
+    # checkout; personal capture and ChatGPT mirroring remain independent of C3.
     checked("systemctl", "--user", "restart", "workflowy-bridge.service")
-    checked("systemctl", "--user", "start", "workflowy-roadmap-sync.service")
-    print("Workflowy runtime deployed; bridge restarted and roadmap sync triggered.")
+    print("Workflowy personal runtime deployed; capture bridge restarted.")
     return 0
 
 

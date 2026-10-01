@@ -38,25 +38,12 @@ class DeployRuntimeTests(unittest.TestCase):
                 calls,
             )
             self.assertIn(
-                ("systemctl", "--user", "enable", "--now", "workflowy-roadmap-sync.timer"),
-                calls,
-            )
-            self.assertIn(
-                ("systemctl", "--user", "enable", "--now", "workflowy-roadmap-sync.path"),
-                calls,
-            )
-            self.assertIn(
-                ("systemctl", "--user", "enable", "--now", "workflowy-c2-daily-mirror.timer"),
-                calls,
-            )
-            self.assertIn(
                 ("systemctl", "--user", "restart", "workflowy-bridge.service"),
                 calls,
             )
-            self.assertIn(
-                ("systemctl", "--user", "start", "workflowy-roadmap-sync.service"),
-                calls,
-            )
+            self.assertFalse(any("roadmap" in unit or "c2-daily" in unit for unit in deploy_runtime.UNITS))
+            self.assertFalse(any("roadmap" in argument or "c2-daily" in argument
+                                 for call in calls for argument in call))
 
 
 if __name__ == "__main__":
