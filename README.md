@@ -239,28 +239,12 @@ wf personalhub-links ~/path/to/personalhub.db \
 
 Use `--create-column` only when you intentionally want the program to add that column.
 
-## Codex roadmap ↔ Workflowy
+## C3 boundary
 
-`wf roadmap-sync` usa Workflowy come **unica centralina operativa visibile** della roadmap canonica. `roadmap.sqlite` resta la source of truth; GitHub conserva audit e codice. Le viste Markdown sono compatibilità/documentazione e non determinano più lo stato mostrato.
-
-La dashboard combina roadmap + stato reale di `github-autosync` + binding di `chrome-codex-switcher`:
-
-- `Ready`: prompt pendenti con dipendenze e prerequisiti manuali soddisfatti, sempre nell'ordine canonico `queue_position` di `roadmap.sqlite`;
-- `Waiting`: prompt pendenti ancora dipendenti da altri task o da prerequisiti manuali, mantenendo lo stesso ordine canonico;
-- `Running`: Codex ha realmente acquisito il prompt;
-- `Integration`: worker finito, PR/CI/rebase/merge gestiti asincronamente. La sezione mostra anche una mini-dashboard dell'integratore con conteggio task, posizione in coda e una barra a fasi basata esclusivamente sugli stati reali `queued → checks-pending → rebasing → merge-wait/integrating → merged` (20/40/60/80/100%). Non è una stima del tempo residuo;
-- ogni task con pipeline attiva mostra la stessa barra nella propria nota, insieme a PR, coda e `integration_reason` quando presente;
-- `Needs fix`: solo BLOCKED/FAIL operativi ancora senza un successore correttivo attivo/completato, oppure hard blocker dell'integratore; failure storici o già sostituiti restano in `Archive`;
-- `Done`: PASS canonico;
-- `Archive`: stati storici/non operativi.
-
-Quando un prompt **entra** in `Ready`, `roadmap-sync` invia una notifica Telegram per quel task. Lo stato della transizione è persistito nel cache SQLite: i sync successivi non duplicano l'avviso, un task che esce e poi rientra in `Ready` viene notificato di nuovo, e un invio fallito viene ritentato. Il primo sync dopo l'attivazione registra i task già `Ready` come baseline senza inviare una raffica retroattiva. Il runtime usa il notifier Telegram condiviso con `project_id=96` e la credenziale `telegram.env` caricata dal servizio systemd.
-
-Ogni prompt espone azioni operative nella nota: `🚀 Apri`, `📋 Copia`, `🌐 ChatGPT` quando esiste il binding Chrome, e il deep link `🧠 Codex` quando CCS lo conosce. `PROMPT_ID` è la chiave comune e non viene mai dedotto da URL o titoli.
-
-Lo stato lifecycle mostrato sotto ogni prompt è **sola lettura**. Workflowy non interpreta più figli `R/P/B/F` e non può portare direttamente un task a `running`, `PASS`, `BLOCKED` o `FAIL`. L'avvio passa da `🚀 Avvia` → `roadmap_start.py`; la finalizzazione passa dall'unico `roadmap_finish.py`. La telemetria Codex e lo stato dell'integratore possono essere mostrati come evidenza separata, ma non sovrascrivono lo stato canonico della roadmap.
-
-Il timer opzionale `deploy/systemd/workflowy-roadmap-sync.timer` mantiene la dashboard sincronizzata con `roadmap.sqlite`, che resta l'unica source of truth. Nel runtime canonico anche `workflowy-roadmap-sync.path` osserva le modifiche locali applicate dal writer e programma subito lo stesso servizio; la nota radice mostra `⏳` finché una proiezione non è stata confermata e resta `✅` solo dopo il completamento.
+Workflowy is personal capture/import infrastructure only. C3's web app and local
+writer own project-work control; roadmap sync, manual ordering, launch/recovery
+routes and their systemd units have been retired. Personal captures, mirrors,
+ChatGPT import and external-system adapters remain independent of C3.
 
 ## External systems
 
