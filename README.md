@@ -350,3 +350,13 @@ python -m unittest discover -s tests -v
 ```
 
 CI runs the suite on Python 3.11 and 3.13.
+
+## Project release number
+
+Root `NV.txt` is the project release source. The source checkout and the existing
+editable Fedora installation read this file directly. Interactive `wf` and
+`workflowy-import-md` commands display NV on stderr before output; stdout,
+redirected commands, services and logs retain their existing contract. A missing
+or invalid source displays `NV unavailable` only interactively. Ordinary commits
+retain NV; deliberate releases increment once and reconcile the integrated SHA
+through MegaVault. Initial adoption preserves registry version 1.

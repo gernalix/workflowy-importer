@@ -928,6 +928,8 @@ def run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    from .nv import banner
+    banner()
     args = build_parser().parse_args()
     try:
         return run(args)
