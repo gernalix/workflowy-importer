@@ -390,6 +390,8 @@ def run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    from .nv import banner
+    banner()
     parser = build_parser()
     args = parser.parse_args()
     try:
