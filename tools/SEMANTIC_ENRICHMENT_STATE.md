@@ -17,12 +17,13 @@ Add high-confidence topical tags and reciprocal native-format node hyperlinks to
 - [x] Create and SHA-256 verify pre-change account snapshot.
 - [x] Build a conservative high-confidence plan, 11 curated reciprocal pairs.
 - [x] Targeted unit tests PASS.
-- [ ] Apply plan to authenticated account in rate-limit-safe batches; journal every change.
+- [x] First 13 linked nodes applied and GET-verified, 0 conflicts.
+- [ ] Continue the remaining 330 nodes with per-node precondition, sparse GET readback and final full export verification.
 - [ ] Check count, API readback and absence of new duplicates/conflicts.
 - [ ] Publish final tool through single-writer integration and verify canonical revision.
 
 ## Current step
-Publish a recoverable Git checkpoint for the tool, then run the first live batch (link targets first), monitor its verified readbacks, and resume remaining edits without duplicating earlier writes.
+First 13 linked nodes have been applied with individual readback, 0 conflicts. API optimization preserves GET precondition and verified readback of every Nth additional write; all writes will get a final full-export verification.
 
 ## Evidence
 Run: `PYTHONPATH=src python3 -m unittest discover -s tests -p test_workflowy_semantic_enrich.py -v`.
@@ -32,4 +33,4 @@ Journal will be `/home/daniele/Documents/Workflowy/semantic-enrichment/2026-10-1
 All planned edits are verified or explicitly recorded as conflicts; source nodes, hierarchy, title strings and preexisting note prefixes stay unchanged. Rollback only touches a node if it still matches exactly what this process wrote.
 
 ## Next action
-Apply first 13 reciprocal-link node edits with a small `--limit`, verify journal/API readbacks, then continue the remaining nodes and update this state file before final Git integration.
+Continue the 330 remaining nodes using `--readback-every 5` and the existing journal; validate all applied notes using a fresh complete API export, then update state and submit single-writer integration.

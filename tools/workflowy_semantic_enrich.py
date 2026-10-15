@@ -158,7 +158,7 @@ def mutate(args) -> None:
         raise ValueError("Baseline backup checksum mismatch")
     entries = record["edits"] if args.mode == "apply" else list(reversed(record["edits"]))
     latest = journal_status(args.journal)
-    done = skipped = conflict = 0
+    done = skipped = conflict = readbacks = 0
     with WorkflowyClient(load_api_key()) as api:
         for entry in entries:
             id = entry["id"]
@@ -187,20 +187,23 @@ def mutate(args) -> None:
                 journal_write(args.journal, id, "pending", args.mode)
                 api.update_node(id, note=after)
                 time.sleep(args.delay)
-                checked = api.get_node(id)
-                time.sleep(args.delay)
-                if (checked.get("note") or "") != after:
-                    raise RuntimeError("API readback mismatch")
+                check_now = args.mode == "rollback" or (done + 1) % args.readback_every == 0
+                if check_now:
+                    checked = api.get_node(id)
+                    time.sleep(args.delay)
+                    if (checked.get("note") or "") != after:
+                        raise RuntimeError("API readback mismatch")
+                    readbacks += 1
                 state = "applied" if args.mode == "apply" else "rolled_back"
-                journal_write(args.journal, id, state)
+                journal_write(args.journal, id, state, "GET readback" if check_now else "HTTP 200; batch export verification pending")
                 latest[id] = state
                 done += 1
                 if done % 10 == 0:
-                    print(json.dumps({"mode": args.mode, "verified": done, "conflicts": conflict}), flush=True)
+                    print(json.dumps({"mode": args.mode, "updated": done, "readbacks": readbacks, "conflicts": conflict}), flush=True)
             except Exception as exc:
                 journal_write(args.journal, id, "error", type(exc).__name__)
                 raise
-    print(json.dumps({"mode": args.mode, "verified": done,
+    print(json.dumps({"mode": args.mode, "updated": done, "readbacks": readbacks,
                       "already_processed": skipped, "conflicts": conflict,
                       "journal": str(args.journal)}), flush=True)
 
@@ -218,12 +221,13 @@ def main():
         p.add_argument("--journal", required=True, type=Path)
         p.add_argument("--limit", type=int, default=25)
         p.add_argument("--delay", type=float, default=1.15)
+        p.add_argument("--readback-every", type=int, default=1)
     args = parser.parse_args()
     if args.mode == "plan":
         plan(args)
     else:
-        if args.limit < 1 or args.delay < 1:
-            raise ValueError("limit must be positive; delay >=1s")
+        if args.limit < 1 or args.delay < 1 or args.readback_every < 1:
+            raise ValueError("limit and readback-every must be positive; delay >=1s")
         mutate(args)
 
 
