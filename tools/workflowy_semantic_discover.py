@@ -20,6 +20,8 @@ import numpy as np
 
 _HTML = re.compile(r"<[^>]*>")
 _BAD = re.compile(r"(?i)^(?:https?://|ftp://|file://|[/~]|codex://|\\|git@)")
+_CHAT_MESSAGE = re.compile(r"^\s*\[\s*(?:\d{1,2}[:/]\d{1,2}|\d{4}-\d{1,2})[^]\n]{0,45}\]\s*[^:]{1,60}:")
+_DATE_LABEL = re.compile(r"(?i)^(?:installata?\s+il\s+)?(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d")
 _GENERIC = {
     "notes", "note", "inbox", "untitled", "task", "new node", "today",
     "prompt", "risposta", "link", "codice", "app", "test", "altro",
@@ -47,7 +49,8 @@ def eligible(n: dict, child_count: int) -> bool:
     t = display(raw)
     if not t or len(t) > 220 or len(raw) > 550:
         return False
-    if _BAD.search(t) or t.casefold() in _GENERIC or t.count("http") >= 2:
+    if (_BAD.search(t) or _CHAT_MESSAGE.search(t) or _DATE_LABEL.search(t)
+            or t.casefold() in _GENERIC or t.count("http") >= 2):
         return False
     if t.count("\n") > 1 or len(re.findall(r"\w+", t)) > 40:
         return False
@@ -141,40 +144,50 @@ def embed(texts: list[str], model_dir: Path, batch_size: int, threads: int) -> n
 
 
 def candidates(
-    docs: list[dict], vectors: np.ndarray, *, topk: int = 5,
-    floor: float = 0.84, max_out: int = 1800
+    docs: list[dict], vectors: np.ndarray, *, topk: int = 6,
+    floor: float = 0.84, min_csls: float = 0.055,
+    max_out: int = 1800
 ) -> list[dict]:
-    ids = {d["id"]: i for i, d in enumerate(docs)}
     roots = np.array([d["root"] for d in docs])
     selected: dict[tuple[int, int], dict] = {}
-    # Block matmul avoids materializing the full O(N^2) pair matrix.
-    for start in range(0, len(docs), 128):
+    n = len(docs)
+    radius = np.zeros(n, np.float32)
+    # Correct embedding hubness using cross-root local-neighbour density.
+    for start in range(0, n, 128):
         scores = vectors[start:start + 128] @ vectors.T
         for ri in range(len(scores)):
             i = start + ri
-            row = scores[ri]
-            row[i] = -1.0
-            # Ignore same sibling lists, same root subtree, and ancestors by
-            # requiring different top-level roots. Strict and conservative.
-            row[roots == roots[i]] = -1.0
-            take = np.argpartition(row, -min(topk, len(row)))[-topk:]
+            scores[ri, roots == roots[i]] = -1
+            k = min(12, n)
+            radius[i] = float(np.partition(scores[ri], -k)[-k:].mean())
+    for start in range(0, n, 128):
+        scores = vectors[start:start + 128] @ vectors.T
+        for ri in range(len(scores)):
+            i = start + ri
+            raw = scores[ri]
+            adjusted = 2 * raw - radius[i] - radius
+            adjusted[roots == roots[i]] = -9
+            k = min(topk, n)
+            take = np.argpartition(adjusted, -k)[-k:]
             for j in take:
-                sim = float(row[j])
-                if sim < floor:
+                j = int(j)
+                sim = float(raw[j])
+                csls = float(adjusted[j])
+                if sim < floor or csls < min_csls:
                     continue
-                a, b = min(i, int(j)), max(i, int(j))
+                a, b = min(i, j), max(i, j)
                 key = (a, b)
                 if key in selected:
                     continue
                 x, y = docs[a], docs[b]
                 selected[key] = {
                     "a": x["id"], "b": y["id"],
-                    "score": round(sim, 5),
+                    "score": round(sim, 5), "csls": round(csls, 5),
                     "title_a": x["name"][:200], "title_b": y["name"][:200],
                     "path_a": x["context"], "path_b": y["context"],
                     "root_a": x["root"], "root_b": y["root"],
                 }
-    return sorted(selected.values(), key=lambda p: -p["score"])[:max_out]
+    return sorted(selected.values(), key=lambda p: -p["csls"])[:max_out]
 
 
 def private_json(path: Path, data: dict) -> None:
@@ -196,6 +209,7 @@ def main() -> None:
     ap.add_argument("--threads", type=int, default=4)
     ap.add_argument("--floor", type=float, default=0.84)
     ap.add_argument("--topk", type=int, default=5)
+    ap.add_argument("--min-csls", type=float, default=0.025)
     args = ap.parse_args()
 
     raw = args.backup.read_bytes()
@@ -203,7 +217,7 @@ def main() -> None:
     docs, texts = prepare(nodes)
     print(f"PREPARED {len(docs)}/{len(nodes)} eligible nodes", flush=True)
     vectors = embed(texts, args.model_dir, args.batch_size, args.threads)
-    cand = candidates(docs, vectors, topk=args.topk, floor=args.floor)
+    cand = candidates(docs, vectors, topk=args.topk, floor=args.floor, min_csls=args.min_csls)
     private_json(args.output, {
         "schema": "workflowy-semantic-candidates/v2",
         "backup": str(args.backup),
