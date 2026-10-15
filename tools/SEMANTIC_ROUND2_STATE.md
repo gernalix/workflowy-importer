@@ -24,7 +24,7 @@ Follow up on the 2026-10-15 first pass with actual semantic relationships across
 - [ ] Checkpoint final results in Git, commit+push, single-writer finish/merge check, report.
 
 ## Current step
-First 8 notes applied and individually verified. Continue remaining 402 with GET precondition, durable journal, periodic readbacks. Complete full account export verification before closure. Local embedding data were not sent externally.
+Live worker PID 2678791 on Fedora is applying the remaining 402 notes (asynchronously). Verified journal checkpoint at least 206/410 applied, 0 conflicts and errors. Do not start a duplicate worker; first check this PID and the canonical private journal. Finish full account export verification before closure. Local embedding data were not sent externally.
 
 - Private round-2 plan: `~/Documents/Workflowy/semantic-enrichment/2026-10-15/plan-round2.json`, curated pair rationales `curated-pairs-round2.json`; no private content in Git.
 
@@ -38,4 +38,4 @@ First 8 notes applied and individually verified. Continue remaining 402 with GET
 Semantic relationships added only when justified and independently validated; original note content retained, no original/user tag removals; all changes recoverable with journal; zero unreported conflicts; full export verification.
 
 ## Next action
-Commit+push checkpoint; run remaining 402 live edits with --readback-every 5, monitor journal. After completion run verify against API full export and update Git state and NV once, then single-writer finish and verify integration.
+Poll Remote Desktop Commander process PID 2678791 and the private journal `~/Documents/Workflowy/semantic-enrichment/2026-10-15/journal-round2.jsonl`. When process exits 0, run `tools/workflowy_semantic_enrich.py verify --plan .../plan-round2.json --journal .../journal-round2.jsonl --output .../verification-round2.json`. Confirm all 410 notes, 52 reciprocal pairs, 0 conflicts, no original content deleted. Then bump root NV.txt exactly once, commit+push, single-writer finish and merge check.
