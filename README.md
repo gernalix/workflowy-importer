@@ -139,6 +139,26 @@ wf backup ~/Documents/Workflowy/backups/manual.md --format md
 
 The native Workflowy search remains the right tool for normal human searching. The SQLite cache exists for programs: deduplication, history/diffs, joins with PersonalHub, offline processing and avoiding repeated full API reads.
 
+## Curated semantic links (local, reversible)
+
+The optional `tools/workflowy_semantic_discover.py` analyzes a **user-owned JSON
+backup locally**, using an ONNX multilingual embedding model installed separately
+in the workstation cache. It only emits a private candidate report, **never writes
+any Workflowy nodes**, and its similarity scores are not considered authorization
+to create links. Human-reviewed ID pairs and concrete rationales are required.
+
+`tools/workflowy_semantic_round2_plan.py` compares the verified original backup,
+the previous local edit plan and those explicitly curated pairs. It prepares note-
+only changes: reciprocal HTML links, plus removal of **only** lexical topic tags
+appended by the first-pass tool (never preexisting/user tags). It adds no tags.
+
+The existing `tools/workflowy_semantic_enrich.py apply|rollback|verify` then
+performs authenticated, per-node compare-before-write updates, appends a durable
+private journal and verifies against a fresh API export. Backups, candidate
+reports, plans and journals must stay outside Git; never send account text to
+the hosted model repository. A `null` note may restore as an empty note because
+the current API does not expose an exact null-note restoration operation.
+
 ## Automatic classification
 
 Copy `rules.example.json` to:
