@@ -28,6 +28,13 @@ Live worker PID 2678791 on Fedora is applying the remaining 402 notes (asynchron
 
 - Private round-2 plan: `~/Documents/Workflowy/semantic-enrichment/2026-10-15/plan-round2.json`, curated pair rationales `curated-pairs-round2.json`; no private content in Git.
 
+## User performance steer (2026-10-15 ~19:42 CEST)
+- User rejects an approach requiring approximately 18 seconds per node as infeasible for thousands. Measured actual current rate on Fedora journal: 280 successful updates over 717.5 seconds = 2.56 seconds/update; **not** 18 seconds, but still inadequate for large-scale use.
+- Official Workflowy API documents only individual node POST updates (`/api/v1/nodes/:id`) and full export, with export rate limit 1/minute; no documented bulk update endpoint. Community testing (not official guarantee) suggests 60 requests per 60-second bucket shared across endpoints.
+- Current task is ONLY 410 planned nodes, with most already applied and journaled; finish this bounded operation, but do not apply the same GET+POST+periodic-GET loop to thousands of nodes.
+- For future large tasks prioritize local analysis, smaller curated change set and fewer node writes. If thousands of writes truly necessary, evaluate one validated snapshot + one POST per node + final export with a centralized rate limiter; require a proven no-concurrent-writer window or explicit acceptance of higher conflict risk. Never bypass rate limits, rely on undocumented private APIs, or claim a bulk endpoint exists without proof.
+- Endpoint evidence: https://workflowy.com/api-reference/ ; unconfirmed empirical rate: https://community.workflowy.com/t/what-are-the-rate-limits-of-the-api/1084 .
+
 ## Blockers / risks
 - No native UI access proof of automatic backlink badges; preserve reciprocal hyperlinks.
 - E5 cosine proximity is a *candidate*, not proof of semantic relationship. Require matching concrete entity/event/concept and editorial selection.
