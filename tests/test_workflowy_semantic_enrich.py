@@ -1,5 +1,10 @@
 """Narrow unit tests; no live Workflowy API calls."""
 import importlib.util
+import hashlib
+import json
+import tempfile
+from types import SimpleNamespace
+from unittest import mock
 from pathlib import Path
 import unittest
 
@@ -55,6 +60,42 @@ class WorkflowyEnrichTests(unittest.TestCase):
                    node(B, "Fedora")]
         edits = module.make_edits(records, [[A, B]])
         self.assertFalse(next(x for x in edits if x["id"] == A)["links"])
+
+
+    def test_verify_confirmed_reciprocal_links(self):
+        source = [node(A, "Workflowy"), node(B, "Logseq")]
+        edits = module.make_edits(source, [[A, B]])
+        live = [{**n, "note": next(e["new_note"] for e in edits if e["id"] == n["id"])} for n in source]
+
+        class FakeAPI:
+            def __init__(self, *args, **kwargs):
+                pass
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+            def export_nodes(self):
+                return live
+
+        with tempfile.TemporaryDirectory() as temp:
+            t = Path(temp)
+            raw = json.dumps(source).encode()
+            backup = t / "original.json"; backup.write_bytes(raw)
+            plan = t / "plan.json"
+            plan.write_text(json.dumps({"schema": "workflowy-semantic/v1",
+                "backup_file": str(backup), "backup_sha256": hashlib.sha256(raw).hexdigest(),
+                "edits": edits, "pairs": [[A, B]]}))
+            journal = t / "journal.jsonl"
+            journal.write_text("".join(json.dumps({"id": id, "status": "applied"}) + "\n" for id in (A, B)))
+            output = t / "result.json"
+            args = SimpleNamespace(plan=plan, journal=journal, output=output)
+            with mock.patch.object(module, "WorkflowyClient", FakeAPI), mock.patch.object(module, "load_api_key", return_value="dummy"):
+                module.verify(args)
+            result = json.loads(output.read_text())
+            self.assertEqual(result["confirmed_notes"], 2)
+            self.assertEqual(result["reciprocal_pairs"], 1)
+            self.assertEqual(result["errors"], [])
+
 
 
 if __name__ == "__main__":

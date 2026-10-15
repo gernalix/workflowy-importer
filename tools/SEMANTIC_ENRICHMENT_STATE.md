@@ -23,7 +23,7 @@ Add high-confidence topical tags and reciprocal native-format node hyperlinks to
 - [ ] Publish final tool through single-writer integration and verify canonical revision.
 
 ## Current step
-First 13 linked nodes have been applied with individual readback, 0 conflicts. API optimization preserves GET precondition and verified readback of every Nth additional write; all writes will get a final full-export verification.
+The first 13 linked nodes have been individually verified. A second throttled run has passed at least 250 additional updates with HTTP success, periodic GET readback and zero conflicts. Continue without restarting or invalidating the running process. `verify` is now implemented and unit-tested for full-export final validation.
 
 ## Evidence
 Run: `PYTHONPATH=src python3 -m unittest discover -s tests -p test_workflowy_semantic_enrich.py -v`.
@@ -33,4 +33,4 @@ Journal will be `/home/daniele/Documents/Workflowy/semantic-enrichment/2026-10-1
 All planned edits are verified or explicitly recorded as conflicts; source nodes, hierarchy, title strings and preexisting note prefixes stay unchanged. Rollback only touches a node if it still matches exactly what this process wrote.
 
 ## Next action
-Continue the 330 remaining nodes using `--readback-every 5` and the existing journal; validate all applied notes using a fresh complete API export, then update state and submit single-writer integration.
+Wait for PID 1899805 to finish; run `tools/workflowy_semantic_enrich.py verify --plan .../plan-v1.json --journal .../journal-v1.jsonl --output .../verification-v1.json`, check report. Record final counts/commit and run the single-writer `finish` integration.

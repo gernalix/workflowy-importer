@@ -208,6 +208,67 @@ def mutate(args) -> None:
                       "journal": str(args.journal)}), flush=True)
 
 
+
+def verify(args) -> None:
+    record = json.loads(args.plan.read_text())
+    if record.get("schema") != "workflowy-semantic/v1":
+        raise ValueError("Invalid plan")
+    backup_raw = Path(record["backup_file"]).read_bytes()
+    if hashlib.sha256(backup_raw).hexdigest() != record["backup_sha256"]:
+        raise ValueError("Backup checksum mismatch")
+    baseline = {n["id"]: n for n in json.loads(backup_raw)}
+    latest = journal_status(args.journal)
+    with WorkflowyClient(load_api_key()) as api:
+        nodes = api.export_nodes()
+    current = {n["id"]: n for n in nodes}
+    errors = []
+    confirmed = 0
+    tag_count = 0
+    for edit in record["edits"]:
+        id = edit["id"]
+        if latest.get(id) != "applied":
+            errors.append({"id": id, "issue": "not applied"})
+            continue
+        now, old = current.get(id), baseline.get(id)
+        if not now or not old:
+            errors.append({"id": id, "issue": "node missing"})
+            continue
+        for field in ("name", "parent_id", "priority", "completed", "completedAt", "createdAt", "data"):
+            if now.get(field) != old.get(field):
+                errors.append({"id": id, "issue": "field changed", "field": field})
+        if (now.get("note") or "") != edit["new_note"]:
+            errors.append({"id": id, "issue": "note mismatch"})
+            continue
+        for tag in edit["tags"]:
+            if not re.search(r"(?<!\w)#" + tag + r"\b", now["note"] or "", re.I):
+                errors.append({"id": id, "issue": "tag missing", "tag": tag})
+        tag_count += len(edit["tags"])
+        confirmed += 1
+    reciprocal = 0
+    for a, b in record["pairs"]:
+        if (a in current and b in current and
+                b.replace("-", "")[-12:] in ((current[a].get("name") or "") + " " + (current[a].get("note") or "")) and
+                a.replace("-", "")[-12:] in ((current[b].get("name") or "") + " " + (current[b].get("note") or ""))):
+            reciprocal += 1
+        else:
+            errors.append({"id": a, "issue": "reciprocal link missing", "target": b})
+    report = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "original_nodes": len(baseline), "current_nodes": len(nodes),
+        "current_unique_ids": len(current) == len(nodes),
+        "planned_edits": len(record["edits"]), "confirmed_notes": confirmed,
+        "tags_confirmed": tag_count,
+        "reciprocal_pairs": reciprocal,
+        "missing_original_ids": len(set(baseline) - set(current)),
+        "new_ids": len(set(current) - set(baseline)),
+        "errors": errors,
+    }
+    private_write(args.output, report)
+    print(json.dumps({k: (len(v) if k == "errors" else v) for k, v in report.items()}, ensure_ascii=False), flush=True)
+    if errors:
+        raise SystemExit(1)
+
+
 def main():
     parser = argparse.ArgumentParser()
     modes = parser.add_subparsers(dest="mode", required=True)
@@ -215,6 +276,10 @@ def main():
     p.add_argument("--backup", required=True, type=Path)
     p.add_argument("--pairs", type=Path)
     p.add_argument("--output", required=True, type=Path)
+    v = modes.add_parser("verify")
+    v.add_argument("--plan", required=True, type=Path)
+    v.add_argument("--journal", required=True, type=Path)
+    v.add_argument("--output", required=True, type=Path)
     for name in ("apply", "rollback"):
         p = modes.add_parser(name)
         p.add_argument("--plan", required=True, type=Path)
@@ -225,6 +290,8 @@ def main():
     args = parser.parse_args()
     if args.mode == "plan":
         plan(args)
+    elif args.mode == "verify":
+        verify(args)
     else:
         if args.limit < 1 or args.delay < 1 or args.readback_every < 1:
             raise ValueError("limit and readback-every must be positive; delay >=1s")
