@@ -1,0 +1,38 @@
+# Workflowy Semantic Round 2 — durable task state
+
+## Goal and constraints
+Follow up on the 2026-10-15 first pass with actual semantic relationships across the original Workflowy account. User steer: **tags ONLY where more useful than native internal links, never indiscriminately**. Prefer a small number of evidence-backed links. Audit and correct earlier generated topic tags that duplicate a concept link, keeping all original/user tags. Do not modify titles, hierarchy, external hyperlinks, or preexisting notes; protect user edits since the first pass. Do not use C2/C3. Never send Workflowy content to a third party; embeddings locally only.
+
+## Verified
+- GitHub MegaVault master revision `465c12831bb2295b341044dbdaf9c65781c0ec41`; reviewed `ai/META_INFRASTRUCTURE.md#Protocol resolution` and `#Git single writer and durable tasks`. Use single-writer isolated worktree and commit+push.
+- `gernalix/workflowy-importer` PR #52 from first pass merged; root `tools/workflowy_semantic_enrich.py` exists.
+- First-pass private plan+journal+verification: `~/Documents/Workflowy/semantic-enrichment/2026-10-15/`; 343 nodes modified, 362 topic tags added, 11 reciprocal link pairs. 0 first-pass errors, all original 9,718 nodes preserved.
+- New backup: `~/Documents/Workflowy/backups/workflowy-pre-semantic-round2-20261015-190900-CEST.json`, 9,722 unique nodes, SHA-256 `27eb85b33f53bda43ab7aebb082fe56e0d2825b15039fc48dc8199eaeb68c040`.
+- Existing Fedora Python: `onnxruntime`, `tokenizers`, NumPy, SciPy available (no PyTorch or sentence_transformers). Multilingual E5 small ONNX int8 model files cached locally under `~/.cache/workflowy-semantic-model/multilingual-e5-small/`; 384-dim Bert model with input_ids, attention_mask, token_type_ids, last_hidden_state.
+- First-pass tool can write API notes with precondition and journal; specific UI-native backlink indexing unproven. Reciprocal HTML links in notes confirmed through API.
+
+## Executable checklist
+- [x] Verify repo and protocol, user steer.
+- [x] Take and verify immutable second-pass full JSON backup.
+- [x] Acquire **local only** multilingual embedding model; verify ONNX interface.
+- [ ] Extract semantically meaningful note titles and hierarchy, excluding irrelevant/huge/imported text; compute local embeddings and candidate pairs.
+- [ ] Curate pairs with strong actual relationships; reject superficial topical overlap and redundant ancestry; rank relative to existing links.
+- [ ] Audit first-pass-generated tags; remove strictly redundant topic tags while keeping every original tag. Use no or few new classification tags only if genuinely useful for filtering.
+- [ ] Produce immutable, SHA-bound private plan and conflict-safe apply/rollback tool; tests and dry-run review.
+- [ ] Apply in bounded batches, monitor live readback/conflicts, verify complete export and original nonowned fields.
+- [ ] Checkpoint final results in Git, commit+push, single-writer finish/merge check, report.
+
+## Current step
+Implement efficient local semantic pair candidate generation and shortlist with hierarchy context. Do not write Workflowy nodes until candidates, tag audit, tests and rollback are ready.
+
+## Blockers / risks
+- No native UI access proof of automatic backlink badges; preserve reciprocal hyperlinks.
+- E5 cosine proximity is a *candidate*, not proof of semantic relationship. Require matching concrete entity/event/concept and editorial selection.
+- User may edit account concurrently; enforce exact GET name/note precondition. Distinguish remote edits versus our prior changes.
+- Avoid volume-driven tagging and linking.
+
+## Acceptance criteria
+Semantic relationships added only when justified and independently validated; original note content retained, no original/user tag removals; all changes recoverable with journal; zero unreported conflicts; full export verification.
+
+## Next action
+Implement local ONNX embedding candidate analyzer in the isolated worktree, evaluate sample candidates, and form a high-precision curated link shortlist before any live write.
