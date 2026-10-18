@@ -15,7 +15,10 @@ from pathlib import Path
 import re
 import time
 
-import numpy as np
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 _HTML = re.compile(r"<[^>]*>")
@@ -109,6 +112,7 @@ def prepare(nodes: list[dict]) -> tuple[list[dict], list[str]]:
 
 
 def embed(texts: list[str], model_dir: Path, batch_size: int, threads: int) -> np.ndarray:
+    import numpy as np
     import onnxruntime as ort
     from tokenizers import Tokenizer
 
@@ -148,6 +152,8 @@ def candidates(
     floor: float = 0.84, min_csls: float = 0.055,
     max_out: int = 1800
 ) -> list[dict]:
+    import numpy as np
+
     roots = np.array([d["root"] for d in docs])
     selected: dict[tuple[int, int], dict] = {}
     n = len(docs)

@@ -3,6 +3,7 @@ import importlib.util
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))
@@ -25,6 +26,16 @@ def first_edit(identifier, name, old, new, tags, links=None):
 
 
 class Round2Tests(unittest.TestCase):
+    def test_safety_helpers_do_not_require_embedding_dependencies(self):
+        spec = importlib.util.spec_from_file_location(
+            "discovery_without_embeddings", TOOLS / "workflowy_semantic_discover.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {"numpy": None, "onnxruntime": None, "tokenizers": None}):
+            spec.loader.exec_module(module)
+            self.assertTrue(module.eligible(node(A, "Confronto Workflowy Logseq"), 0))
+            self.assertFalse(module.eligible(node(B, "[1/21, 16:37] Contact: Hi"), 0))
+
     def test_drop_only_our_topic_tags_preserve_original(self):
         old = "Contenuto #deciso\nConservare esattamente."
         added = old + "\n\n#workflowy #logseq\nCorrelati: <a href=\"https://workflowy.com/#/aaaaaaaaaaaa\">nota</a>"
