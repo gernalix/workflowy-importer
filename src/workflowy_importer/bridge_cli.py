@@ -794,13 +794,10 @@ def run(args: argparse.Namespace) -> int:
                         f"destination={decision.destination}"
                     )
             elif args.command == "chatgpt-live-sync":
-                print(
-                    json.dumps(
-                        _run_chatgpt_live(args, db, client),
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    )
-                )
+                live_result = _run_chatgpt_live(args, db, client)
+                print(json.dumps(live_result, ensure_ascii=False, sort_keys=True))
+                if live_result.get("error"):
+                    return 1
             elif args.command == "chatgpt":
                 conv = load_conversation(
                     args.export,
