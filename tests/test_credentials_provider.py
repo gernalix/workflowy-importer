@@ -10,6 +10,31 @@ from workflowy_importer.credentials import CredentialError, load_api_key
 
 
 class CredentialProviderTests(unittest.TestCase):
+    def setUp(self):
+        configured = mock.patch("workflowy_importer.credentials._bitwarden_configured", return_value=False)
+        self.configured = configured.start()
+        self.addCleanup(configured.stop)
+
+    def test_configured_vault_failure_never_reads_legacy_or_environment(self):
+        self.configured.return_value = True
+        with mock.patch("workflowy_importer.credentials._bitwarden_credential", side_effect=CredentialError("unavailable")), mock.patch(
+            "workflowy_importer.credentials._secret_service_lookup", side_effect=AssertionError("fallback")
+        ), mock.patch.dict(os.environ, {"WORKFLOWY_API_KEY": "stale"}):
+            with self.assertRaises(CredentialError):
+                load_api_key()
+
+    def test_vault_is_refreshed_and_inherited_secrets_are_not_forwarded(self):
+        self.configured.return_value = True
+        with mock.patch("workflowy_importer.credentials.subprocess.run") as run, mock.patch.dict(
+            os.environ, {"BWS_ACCESS_TOKEN": "bootstrap", "WORKFLOWY_API_KEY": "stale", "RUST_LOG": "trace"}
+        ):
+            run.side_effect = [mock.Mock(returncode=0, stdout="first"), mock.Mock(returncode=0, stdout="second")]
+            self.assertEqual(load_api_key(), "first")
+            self.assertEqual(load_api_key(), "second")
+            for call in run.call_args_list:
+                self.assertFalse({"BWS_ACCESS_TOKEN", "WORKFLOWY_API_KEY", "RUST_LOG"} & call.kwargs["env"].keys())
+                self.assertTrue(call.kwargs["capture_output"])
+
     def test_systemd_credential_has_priority(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)

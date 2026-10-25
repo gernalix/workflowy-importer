@@ -24,6 +24,16 @@ The systemd templates set `PYTHONPATH` themselves and execute `/usr/bin/python3 
 
 Credential access is provider-based rather than hard-wired to one plaintext file. In automatic mode the resolver uses, in order:
 
+When the Fedora runtime reference `FEDORA_WORKFLOWY_ENV` is configured in
+`~/.config/bws/references.json`, automatic mode uses Bitwarden Secrets Manager
+exclusively. The installed `~/.local/bin/bws-credential` validates the project
+and retrieves only `WORKFLOWY_API_KEY` on every resolution. A locked desktop
+keyring or vault failure stops the operation without legacy fallback. Existing
+processes keep credentials already loaded; a subsequent client construction
+reads the vault again. `--credential-provider bitwarden` selects it explicitly.
+Only reference metadata belongs in configuration; no key belongs in Git or argv.
+Without that runtime reference, the compatibility order remains:
+
 1. a systemd credential named `workflowy-api-key` from `$CREDENTIALS_DIRECTORY`;
 2. the desktop Secret Service/libsecret entry identified by `application=workflowy-importer`, `credential=workflowy-api-key`;
 3. an already-set ephemeral `WORKFLOWY_API_KEY` environment variable;

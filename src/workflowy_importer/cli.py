@@ -212,9 +212,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--credential-provider",
-        choices=("auto", "systemd", "secret-service", "env", "legacy-file"),
+        choices=("auto", "bitwarden", "systemd", "secret-service", "env", "legacy-file"),
         default="auto",
-        help="Credential provider (default: auto = systemd, Secret Service, env, legacy file)",
+        help="Credential provider (auto uses configured Bitwarden exclusively, otherwise compatibility providers)",
     )
     parser.add_argument(
         "--api-key-env",
