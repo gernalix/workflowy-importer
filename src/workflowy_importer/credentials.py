@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import json
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 DEFAULT_SECRET_FILE = Path("~/.config/codex/secrets/workflowy-api-key").expanduser()
@@ -13,11 +15,41 @@ SECRET_SERVICE_ATTRIBUTES = (
     "credential",
     "workflowy-api-key",
 )
-PROVIDERS = ("auto", "systemd", "secret-service", "env", "legacy-file")
+PROVIDERS = ("auto", "bitwarden", "systemd", "secret-service", "env", "legacy-file")
 
 
 class CredentialError(RuntimeError):
     pass
+
+
+def _bitwarden_configured() -> bool:
+    path = Path.home() / ".config/bws/references.json"
+    if not path.exists():
+        return False
+    try:
+        return "FEDORA_WORKFLOWY_ENV" in json.loads(path.read_text())["references"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise CredentialError("Bitwarden reference configuration is invalid") from exc
+
+
+def _bitwarden_credential() -> str:
+    # The existing host runtime validates the project, strips its machine token,
+    # and injects only this field. Child output stays in this private pipe.
+    runtime = Path.home() / ".local/bin/bws-credential"
+    environment = dict(os.environ)
+    for name in ("BWS_ACCESS_TOKEN", "WORKFLOWY_API_KEY", "RUST_LOG", "RUST_BACKTRACE"):
+        environment.pop(name, None)
+    try:
+        result = subprocess.run(
+            [str(runtime), "--ref", "FEDORA_WORKFLOWY_ENV", "--var", "WORKFLOWY_API_KEY", "--",
+             sys.executable, "-c", "import os,sys;sys.stdout.write(os.environ['WORKFLOWY_API_KEY'])"],
+            capture_output=True, text=True, env=environment, timeout=55, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise CredentialError("Bitwarden Workflowy credential is unavailable") from None
+    if result.returncode:
+        raise CredentialError("Bitwarden Workflowy credential retrieval failed")
+    return _nonempty(result.stdout, "Bitwarden")
 
 
 def _nonempty(value: str, source: str) -> str:
@@ -103,6 +135,8 @@ def load_api_key(
     """
 
     selected = (provider or os.environ.get("WORKFLOWY_CREDENTIAL_PROVIDER") or "auto").strip().lower()
+    if selected == "auto" and _bitwarden_configured():
+        selected = "bitwarden"
     if selected not in PROVIDERS:
         raise CredentialError(
             f"Unsupported Workflowy credential provider {selected!r}; expected one of {', '.join(PROVIDERS)}"
@@ -111,6 +145,8 @@ def load_api_key(
     legacy_path = Path(secret_file).expanduser()
 
     def resolve(name: str) -> str | None:
+        if name == "bitwarden":
+            return _bitwarden_credential()
         if name == "systemd":
             return _systemd_credential()
         if name == "secret-service":
