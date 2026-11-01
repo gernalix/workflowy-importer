@@ -12,48 +12,16 @@ from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
 from .api import WorkflowyAPIError, WorkflowyClient
+from .chatgpt_records import ChatRecord, _timestamp, _is_running, _conversation_url, record_from_payload
+from .chatgpt_storage import CHATGPT_SCHEMA, ensure_chatgpt_schema, upsert_records, classify_statuses
 
 DEFAULT_CDP_ENDPOINT = "http://127.0.0.1:9333"
 DEFAULT_INVENTORY = Path(
     "~/.local/state/chatgpt-rdc-supervisor/chats.json"
 ).expanduser()
 
-CHATGPT_SCHEMA = """
-CREATE TABLE IF NOT EXISTS chatgpt_conversations (
-  conversation_id TEXT PRIMARY KEY,
-  title TEXT NOT NULL,
-  url TEXT NOT NULL,
-  created_at REAL,
-  last_interaction_at REAL,
-  status TEXT NOT NULL DEFAULT 'IDLE',
-  running_evidence_at REAL,
-  async_status TEXT,
-  gizmo_id TEXT,
-  source TEXT NOT NULL,
-  last_seen_at REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_chatgpt_last_interaction
-ON chatgpt_conversations(last_interaction_at DESC);
-CREATE INDEX IF NOT EXISTS idx_chatgpt_status
-ON chatgpt_conversations(status, last_interaction_at DESC);
-CREATE TABLE IF NOT EXISTS chatgpt_sync_state (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-"""
 
 
-@dataclass(slots=True)
-class ChatRecord:
-    conversation_id: str
-    title: str
-    url: str
-    created_at: float | None
-    last_interaction_at: float | None
-    source: str
-    gizmo_id: str | None = None
-    async_status: object | None = None
-    running: bool = False
 
 
 @dataclass(slots=True)
@@ -71,38 +39,10 @@ class ChatGPTRateLimited(RuntimeError):
         self.retry_after = retry_after
 
 
-def ensure_chatgpt_schema(db: sqlite3.Connection) -> None:
-    db.executescript(CHATGPT_SCHEMA)
 
 
-def _timestamp(value: object) -> float | None:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        number = float(value)
-        return number / 1000.0 if number > 1e12 else number
-    text = str(value).strip()
-    if not text:
-        return None
-    try:
-        number = float(text)
-    except ValueError:
-        number = None
-    if number is not None:
-        return number / 1000.0 if number > 1e12 else number
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.timestamp()
 
 
-def _is_running(value: object) -> bool:
-    if value in (None, False, 0, "0", "", "completed", "complete"):
-        return False
-    return True
 
 
 def load_supervisor_inventory(path: Path | str = DEFAULT_INVENTORY) -> dict[str, dict]:
@@ -120,95 +60,10 @@ def load_supervisor_inventory(path: Path | str = DEFAULT_INVENTORY) -> dict[str,
     return result
 
 
-def _conversation_url(
-    conversation_id: str,
-    gizmo_id: str | None,
-    inventory: dict[str, dict],
-) -> str:
-    existing = inventory.get(conversation_id, {}).get("url")
-    if existing:
-        return str(existing)
-    if gizmo_id and gizmo_id.startswith("g-p-"):
-        return f"https://chatgpt.com/g/{gizmo_id}/c/{conversation_id}"
-    return f"https://chatgpt.com/c/{conversation_id}"
 
 
-def record_from_payload(
-    payload: dict,
-    *,
-    source: str,
-    inventory: dict[str, dict],
-) -> ChatRecord | None:
-    conversation_id = str(
-        payload.get("id") or payload.get("conversation_id") or ""
-    ).strip()
-    if not conversation_id:
-        return None
-    gizmo = payload.get("gizmo_id") or payload.get("conversation_template_id")
-    gizmo_id = str(gizmo) if gizmo else None
-    title = str(payload.get("title") or f"Chat {conversation_id[:8]}").strip()
-    created = _timestamp(payload.get("create_time"))
-    updated = _timestamp(payload.get("update_time")) or created
-    async_status = payload.get("async_status")
-    return ChatRecord(
-        conversation_id=conversation_id,
-        title=title,
-        url=_conversation_url(conversation_id, gizmo_id, inventory),
-        created_at=created,
-        last_interaction_at=updated,
-        source=source,
-        gizmo_id=gizmo_id,
-        async_status=async_status,
-        running=_is_running(async_status),
-    )
 
 
-def upsert_records(
-    db: sqlite3.Connection,
-    records: Iterable[ChatRecord],
-    *,
-    now: float,
-) -> int:
-    ensure_chatgpt_schema(db)
-    count = 0
-    with db:
-        for record in records:
-            db.execute(
-                """INSERT INTO chatgpt_conversations(
-                     conversation_id,title,url,created_at,last_interaction_at,
-                     status,running_evidence_at,async_status,gizmo_id,source,last_seen_at
-                   ) VALUES(?,?,?,?,?,'IDLE',?,?,?,?,?)
-                   ON CONFLICT(conversation_id) DO UPDATE SET
-                     title=excluded.title,
-                     url=excluded.url,
-                     created_at=COALESCE(chatgpt_conversations.created_at,excluded.created_at),
-                     last_interaction_at=MAX(
-                       COALESCE(chatgpt_conversations.last_interaction_at,0),
-                       COALESCE(excluded.last_interaction_at,0)
-                     ),
-                     running_evidence_at=COALESCE(
-                       excluded.running_evidence_at,
-                       chatgpt_conversations.running_evidence_at
-                     ),
-                     async_status=excluded.async_status,
-                     gizmo_id=COALESCE(excluded.gizmo_id,chatgpt_conversations.gizmo_id),
-                     source=excluded.source,
-                     last_seen_at=excluded.last_seen_at""",
-                (
-                    record.conversation_id,
-                    record.title,
-                    record.url,
-                    record.created_at,
-                    record.last_interaction_at,
-                    now if record.running else None,
-                    json.dumps(record.async_status, ensure_ascii=False),
-                    record.gizmo_id,
-                    record.source,
-                    now,
-                ),
-            )
-            count += 1
-    return count
 
 
 def mark_running(
@@ -247,37 +102,6 @@ def set_sync_state(db: sqlite3.Connection, key: str, value: object) -> None:
         )
 
 
-def classify_statuses(
-    db: sqlite3.Connection,
-    *,
-    now: float,
-    recent_seconds: float = 15 * 60,
-    running_ttl_seconds: float = 5 * 60,
-) -> dict[str, int]:
-    ensure_chatgpt_schema(db)
-    counts = {"RUNNING": 0, "RECENT": 0, "IDLE": 0}
-    rows = list(
-        db.execute(
-            "SELECT conversation_id,last_interaction_at,running_evidence_at "
-            "FROM chatgpt_conversations"
-        )
-    )
-    with db:
-        for row in rows:
-            running_at = row["running_evidence_at"]
-            updated = row["last_interaction_at"] or 0
-            if running_at and now - float(running_at) <= running_ttl_seconds:
-                status = "RUNNING"
-            elif updated and now - float(updated) <= recent_seconds:
-                status = "RECENT"
-            else:
-                status = "IDLE"
-            counts[status] += 1
-            db.execute(
-                "UPDATE chatgpt_conversations SET status=? WHERE conversation_id=?",
-                (status, row["conversation_id"]),
-            )
-    return counts
 
 
 class ChatGPTCloudCollector:
