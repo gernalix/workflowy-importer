@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest import mock
 
 from workflowy_importer.automation import classify
 from workflowy_importer.cache import connect, duplicate_groups, refresh_cache, search
@@ -16,6 +17,21 @@ from workflowy_importer.bridge_cli import _ensure_daily_mirrors, _ensure_mirror
 
 
 class CredentialTests(unittest.TestCase):
+    def setUp(self):
+        # These tests exercise legacy file precedence, never desktop credentials.
+        for name, kwargs in (
+            ("_bitwarden_configured", {"return_value": False}),
+            ("_bitwarden_credential", {"side_effect": AssertionError("live vault access forbidden in legacy tests")}),
+            ("_systemd_credential", {"return_value": None}),
+            ("_secret_service_lookup", {"return_value": None}),
+        ):
+            patcher = mock.patch("workflowy_importer.credentials." + name, **kwargs)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        environment = mock.patch.dict(os.environ, {"WORKFLOWY_CREDENTIAL_PROVIDER": "auto"})
+        environment.start()
+        self.addCleanup(environment.stop)
+
     def test_secret_file_0600_wins(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "key"

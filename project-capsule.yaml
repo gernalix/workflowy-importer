@@ -1,0 +1,187 @@
+schema_version: c2.project-capsule.v1
+identity:
+  project_id: 96
+  slug: workflowy-importer
+  repository_id: R0097
+scope:
+  purpose: Safety-first Markdown import and local Workflowy automation with explicit
+    credential, API, cache and capture boundaries.
+  boundaries:
+  - Fedora owns the runtime; no duplicate Oracle deployment.
+  - Remote data mutations, browser capture and live smoke are separate operations.
+  - Historical roadmap control-plane routes remain retired.
+repository:
+  canonical_workdir: /home/daniele/projects/workflowy-importer
+  branch_policy: Use isolated task worktrees and the installed single writer with
+    protected main integration.
+architecture:
+  summary: Markdown/model/links handle conversion; api and credentials own remote
+    access; cache stores nodes, snapshots, mappings and events; bridge_cli/bridge_arguments
+    compose workflows; chatgpt_records and chatgpt_storage separate parsing from persistence.
+    README.md and AUTOMATIONS.md describe operation boundaries.
+  entrypoints:
+  - src/workflowy_importer/cli.py
+  - src/workflowy_importer/bridge_cli.py
+  important_paths:
+  - src/workflowy_importer
+  - deploy/systemd
+  - browser-extension
+  - tests
+  - tools
+  - README.md
+  - AUTOMATIONS.md
+dependencies:
+- name: httpx
+  purpose: Official Workflowy API HTTP client.
+- name: markdown-it-py
+  purpose: Markdown parsing.
+- name: Playwright
+  purpose: Separately authorized browser capture; not used by offline verification.
+- name: Fedora Bitwarden runtime
+  purpose: Configured vault credential provider; no legacy fallback after a configured
+    vault failure.
+data:
+  schema: cache.py owns SQLite nodes, snapshots, mappings and events; chatgpt_storage.py
+    owns capture schema and upserts. Native source files and remote Workflowy data
+    remain with their owners. See README.md for journals and replacement behavior.
+  migrations: Use owning SQLite schema/writers with consistent backup; preserve import
+    journals and do not blindly replay uncertain remote mutations.
+runtime:
+  services:
+  - workflowy-backup.service (template; installation not attested)
+  - workflowy-bridge.service (template; installation not attested)
+  - workflowy-cache-sync.service (template; installation not attested)
+  - workflowy-chatgpt-live.service (template; installation not attested)
+  - workflowy-weekly-review.service (template; installation not attested)
+  timers:
+  - workflowy-backup.timer (template; installation not attested)
+  - workflowy-cache-sync.timer (template; installation not attested)
+  - workflowy-chatgpt-live.timer (template; installation not attested)
+  - workflowy-weekly-review.timer (template; installation not attested)
+  containers: []
+devices: []
+commands:
+  setup:
+    not_applicable: Use global Fedora packages as documented; dependency provisioning
+      is separate.
+  build:
+    not_applicable: Python source has no mandatory compiled application build.
+  test_targeted:
+    argv:
+    - env
+    - PYTHONPATH=src
+    - python3
+    - -B
+    - -m
+    - unittest
+    - discover
+    - -s
+    - tests
+    - -p
+    - test_credentials_provider.py
+    - -v
+    cwd: .
+  test_full:
+    argv: &id001
+    - env
+    - PYTHONPATH=src
+    - python3
+    - -B
+    - -m
+    - unittest
+    - discover
+    - -s
+    - tests
+    - -v
+    cwd: .
+  lint:
+    argv:
+    - git
+    - diff
+    - --check
+    cwd: .
+  deploy_install:
+    not_applicable: Use the separately scoped deploy_runtime.py and systemd installation
+      procedure in README.md.
+  smoke:
+    not_applicable: workflowy-import-smoke creates/deletes remote test nodes and requires
+      a separate authorized operation.
+  verify:
+    fast:
+      argv:
+      - python3
+      - /home/daniele/projects/codex-roadmap/tools/project_capsule.py
+      - --repo
+      - .
+      - --mode
+      - FAST
+      cwd: .
+    full:
+      argv:
+      - python3
+      - /home/daniele/projects/codex-roadmap/tools/project_capsule.py
+      - --repo
+      - .
+      - --mode
+      - FULL
+      cwd: .
+safety:
+  invariants:
+  - No keys, cookies, private chat bodies or source data in Git/output.
+  - Preserve no-op, replacement-guard and mutation-journal semantics; no blind network
+    mutation retry.
+  - Do not activate retired roadmap routes or install runtime during verification.
+  risky_operations:
+  - Remote import/replace, semantic enrichment, PersonalHub writes, live smoke and
+    browser capture change data or external state.
+  recovery:
+  - Use tracked import journals, existing owning clients and consistent SQLite backups;
+    preserve sources before recovery.
+acceptance:
+- FAST validates identity, schema, source paths, commands and freshness.
+- FULL runs the existing offline unittest suite.
+- No browser session, vault retrieval, remote mutation or runtime installation is
+  implied.
+references:
+  megavault: /home/daniele/MegaVault/megavault.sqlite
+  c2: 'Historical-only reference: /home/daniele/projects/codex-roadmap/roadmap.sqlite;
+    no lifecycle writes.'
+freshness:
+  reviewed_commit: a30212a37d794250e48fd0ea2546820e065f2958
+  watch_paths:
+  - src
+  - deploy
+  - browser-extension
+  - tests
+  - tools
+  - pyproject.toml
+  - deploy_runtime.py
+  - .github/workflows
+artifacts:
+  agents: AGENTS.md
+  architecture: README.md
+  operations: AUTOMATIONS.md
+  data_model: src/workflowy_importer/cache.py
+validation_hooks:
+- id: offline-unit-tests
+  argv: *id001
+  cwd: .
+  safe: true
+change_verification:
+- paths:
+  - project-capsule.yaml
+  - AGENTS.md
+  - '*.md'
+  commands:
+  - lint
+- paths:
+  - src/*
+  - tests/*
+  - tools/*
+  - deploy/*
+  - browser-extension/*
+  - pyproject.toml
+  - '*.py'
+  - .github/*
+  commands:
+  - test_full
