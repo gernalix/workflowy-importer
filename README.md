@@ -226,8 +226,10 @@ whether they were created on web, desktop, or mobile; device origin is
 deliberately not stored.
 
 The collector reuses the authenticated local ChatGPT CDP browser at
-`127.0.0.1:9333` and the URL inventory maintained by
-`chatgpt-rdc-supervisor`. No ChatGPT cookie or access token is written to
+`127.0.0.1:9333` and optionally reads the existing legacy URL inventory at
+`~/.local/state/chatgpt-rdc-supervisor/chats.json`. That file is a read-only
+compatibility input; a missing or invalid inventory is treated as empty. The
+collector does not launch or require the retired supervisor or its lifecycle. No ChatGPT cookie or access token is written to
 this repository or to the Workflowy cache. Workflowy receives only title,
 chat URL, creation time, last-interaction time, and `RUNNING/RECENT/IDLE`.
 
