@@ -39,9 +39,9 @@ Without that runtime reference, the compatibility order remains:
 3. an already-set ephemeral `WORKFLOWY_API_KEY` environment variable;
 4. the legacy protected file `~/.config/codex/secrets/workflowy-api-key`.
 
-The legacy file is kept only for migration/backward compatibility. New interactive Fedora setups should use Secret Service; systemd services should use `LoadCredential=` or `LoadCredentialEncrypted=`. The program never prints or persists the key.
+The legacy providers are kept only for migration/backward compatibility. New operational Fedora setups must configure the appropriate Bitwarden Secrets Manager runtime from the first configuration. Existing native Secret Service or systemd credential providers remain compatibility paths until their consumer migration is verified. The program never prints or persists the key.
 
-To store the current key in Secret Service without putting it on a command line, run:
+For an explicitly required legacy Secret Service migration only, store the key without putting it on a command line:
 
 ```bash
 secret-tool store --label='Workflowy API key' application workflowy-importer credential workflowy-api-key
@@ -271,9 +271,9 @@ Use `--create-column` only when you intentionally want the program to add that c
 
 ## C3 boundary
 
-Workflowy is personal capture/import infrastructure only. C3's web app and local
-writer own project-work control; roadmap sync, manual ordering, launch/recovery
-routes and their systemd units have been retired. Personal captures, mirrors,
+Workflowy is personal capture/import infrastructure only. C2/C3 project-work
+control and lifecycle writers are retired; roadmap sync, manual ordering,
+launch/recovery routes and their systemd units must remain inactive. Personal captures, mirrors,
 ChatGPT import and external-system adapters remain independent of C3.
 
 ## External systems

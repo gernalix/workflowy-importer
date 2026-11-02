@@ -14,8 +14,8 @@ Use one canonical runtime: the ThinkPad/Fedora workstation.
 
 ## Safety defaults
 
-- API key: `~/.config/codex/secrets/workflowy-api-key`, regular file, owned by the current user, mode `0600`.
-- Environment fallback is accepted only when the canonical secret file is absent.
+- API credentials: configure `FEDORA_WORKFLOWY_ENV` through the appropriate Bitwarden Secrets Manager runtime. Configured automatic mode uses the vault exclusively and fails closed; see README.md for the actual resolver order.
+- Existing native Secret Service, systemd credentials, ephemeral environment and protected-file providers are compatibility paths only when no vault reference is configured; they are not fallback after a vault failure. New operational setup uses Bitwarden from the start.
 - The localhost capture server binds only to loopback and accepts browser POSTs only from extension origins.
 - Destructive/bulk actions are report-only unless `--apply` is explicitly supplied.
 - Ambiguous PersonalHub/name matches are skipped.
@@ -36,7 +36,7 @@ Use one canonical runtime: the ThinkPad/Fedora workstation.
 | 8 | Hub-and-spoke without manual linking | One canonical node plus automatic mirrors, never copied text. |
 | 9 | Resurfacing | `wf resurface --older-than-days ...`. |
 | 10 | Project scaffolding/index | `wf projects --root ~/projects`; records local path as text and Git remote when available. |
-| 11 | Codex/roadmap events | `wf roadmap-sync` exposes a compact Queue/Running/Needs fix/Done/Archive dashboard; exact child commands `R/P/B/F` become canonical single-writer transitions, with B/F marked `#needs_fix`. |
+| 11 | Historical Codex/roadmap events | Retired C2/C3 compatibility history only; roadmap-sync and lifecycle transitions must not be reactivated. |
 | 12 | ChatGPT → Workflowy | `wf chatgpt` extracts one conversation from `conversations.json`; `browser-extension/` exports the current open chat privately through localhost. |
 | 13 | GitHub → Workflowy | `wf ingest github event.json`, idempotent through event IDs/hashes. |
 | 14 | ActivityWatch → Workflowy | `wf ingest activitywatch event.json`. |
@@ -49,7 +49,7 @@ Use one canonical runtime: the ThinkPad/Fedora workstation.
 | 21 | Completed-task cleanup | `wf archive-completed`; report-only unless `--apply`. |
 | 22 | Weekly review | `wf weekly-review` + optional systemd timer. |
 | 23 | Dashboards | Mirrors are exposed as a primitive (`wf mirror`); dashboard policy stays configuration, not hard-coded structure. |
-| 24 | Workflowy as automation panel | `wf roadmap-sync` is the dedicated roadmap control surface; `wf control --parent ...` remains for explicitly allowlisted generic `RUN: action` commands, without a shell. |
+| 24 | Workflowy as automation panel | `wf control --parent ...` accepts explicitly allowlisted generic `RUN: action` commands, without a shell; retired roadmap controls are excluded. |
 | 25 | Human-in-the-loop | Actions execute only after an explicit `RUN:` node exists; unknown/non-allowlisted requests remain untouched. |
 | 26 | CLI | `wf` is the common interface for humans, scripts and agents. |
 | 27 | One local API layer | `wf serve` exposes a loopback-only capture endpoint; authenticated Workflowy access stays server-side. |
@@ -99,4 +99,4 @@ Then load `browser-extension/` as an unpacked Chromium extension and click it on
 
 They are templates only until installed/enabled on the target Fedora account.
 
-For the canonical Fedora runtime, `python3 deploy_runtime.py` copies changed user units, enables the bridge and roadmap-sync timer, restarts the long-lived bridge, and triggers one immediate roadmap sync. `github-autosync` calls this helper automatically after a new `workflowy-importer` revision reaches the canonical checkout.
+For the canonical Fedora runtime, `python3 deploy_runtime.py` copies changed user units, enables the personal bridge and ChatGPT-live timer, and restarts the long-lived bridge. It neither enables nor triggers retired roadmap/C3 controls. `github-autosync` owns this existing opt-in post-sync deploy contract; source validation must not invoke the helper or infer live acceptance from a merge.
