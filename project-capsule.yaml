@@ -147,7 +147,7 @@ references:
   c2: 'Historical-only reference: /home/daniele/projects/codex-roadmap/roadmap.sqlite;
     no lifecycle writes.'
 freshness:
-  reviewed_commit: a30212a37d794250e48fd0ea2546820e065f2958
+  reviewed_commit: 670e0e1c6e53d3530dc3b942c1532997a12692d1
   watch_paths:
   - src
   - deploy
