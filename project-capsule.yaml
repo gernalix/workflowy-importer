@@ -18,7 +18,11 @@ architecture:
   summary: Markdown/model/links handle conversion; api and credentials own remote
     access; cache stores nodes, snapshots, mappings and events; bridge_cli/bridge_arguments
     compose workflows; chatgpt_records and chatgpt_storage separate parsing from persistence.
-    README.md and AUTOMATIONS.md describe operation boundaries.
+    Default import journals live in private owner state outside source; legacy
+    source sidecars require explicit trust. capture_auth owns single-use authenticated
+    encrypted capture; credentials retrieves its dedicated vault field; the extension
+    keeps pairing only in trusted browser session storage. README.md and AUTOMATIONS.md
+    describe operation and migration boundaries.
   entrypoints:
   - src/workflowy_importer/cli.py
   - src/workflowy_importer/bridge_cli.py
@@ -40,6 +44,11 @@ dependencies:
 - name: Fedora Bitwarden runtime
   purpose: Configured vault credential provider; no legacy fallback after a configured
     vault failure.
+- name: cryptography AESGCM
+  purpose: Authenticated encryption for local capture bodies; dedicated capture key
+    stays in the vault and trusted browser session, never on the HTTP wire.
+- name: Node.js 22+
+  purpose: Offline real-WebCrypto interoperability and fake extension handler tests.
 data:
   schema: cache.py owns SQLite nodes, snapshots, mappings and events; chatgpt_storage.py
     owns capture schema and upserts. Native source files and remote Workflowy data
@@ -147,7 +156,7 @@ references:
   c2: 'Historical-only reference: /home/daniele/projects/codex-roadmap/roadmap.sqlite;
     no lifecycle writes.'
 freshness:
-  reviewed_commit: 4f1138d3e57d14fa62e667ed9039eca17e5a6fd2
+  reviewed_commit: 7207c5b106bb839a7c38a4f2eb6f7275a6c2256a
   watch_paths:
   - src
   - deploy
