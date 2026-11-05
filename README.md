@@ -233,6 +233,11 @@ collector does not launch or require the retired supervisor or its lifecycle. No
 this repository or to the Workflowy cache. Workflowy receives only title,
 chat URL, creation time, last-interaction time, and `RUNNING/RECENT/IDLE`.
 
+Connection failures release the Playwright driver even if entering the collector
+fails. If navigation fails, only the new page created by that attempt is closed;
+existing user pages and the browser remain open. A missing CDP browser still
+produces a failed sync rather than a successful empty result.
+
 A user timer runs the sync roughly every 90 seconds. It performs bounded
 recent-metadata reads, a much rarer full sweep, backs off after HTTP 429, and
 only writes Workflowy nodes that changed. Temporary/non-persisted ChatGPT
