@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -14,11 +16,41 @@ from .markdown import LinkResolver, build_tree, count_links, preview_tree, rende
 from .model import ImportNode
 
 
-def _default_state_path(source: Path) -> Path:
+def _legacy_state_path(source: Path) -> Path:
     source = source.expanduser().resolve()
     if source.is_dir():
         return source / ".workflowy-importer-state.json"
     return source.with_name(f".{source.stem}.workflowy-importer-state.json")
+
+
+def _default_state_path(source: Path) -> Path:
+    source_key = str(source.expanduser().resolve()).encode("utf-8")
+    name = hashlib.sha256(source_key).hexdigest() + ".json"
+    return Path.home() / ".local/state/workflowy-importer/imports" / name
+
+
+def _select_state_path(source: Path, explicit: Path | None) -> Path:
+    # An explicit state file is an operator-selected recovery capability.
+    if explicit is not None:
+        return explicit.expanduser().resolve()
+    private = _default_state_path(source)
+    legacy = _legacy_state_path(source)
+    if not (private.exists() or private.is_symlink()) and (legacy.exists() or legacy.is_symlink()):
+        raise RuntimeError(
+            f"Legacy import journal found at {legacy}. Preserve and review it before "
+            f"selecting it with --state-file or moving it to {private}. "
+            "Source-bundled journals are not automatically trusted."
+        )
+    for directory in (private.parent.parent, private.parent):
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = directory.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+            raise RuntimeError("Default import journal directory must be private and owned by this user")
+    if private.exists() or private.is_symlink():
+        info = private.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+            raise RuntimeError("Default import journal must be a private regular file owned by this user")
+    return private
 
 
 def _load_state(path: Path) -> dict | None:
@@ -28,7 +60,9 @@ def _load_state(path: Path) -> dict | None:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"Cannot read state file {path}: {exc}") from exc
-    return value if isinstance(value, dict) else None
+    if not isinstance(value, dict):
+        raise RuntimeError(f"Import state must be a JSON object: {path}")
+    return value
 
 
 def _save_state(path: Path, value: dict) -> None:
@@ -187,7 +221,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--state-file",
         type=Path,
-        help="Override the local idempotency state file",
+        help="Use an explicitly trusted recovery journal (its node IDs authorize cleanup/deletion)",
     )
     parser.add_argument(
         "--replace",
@@ -249,17 +283,15 @@ def run(args: argparse.Namespace) -> int:
         print(preview_tree(parsed.root))
         return 0
 
+    state_path = _select_state_path(source, args.state_file)
+    previous = _load_state(state_path)
+    source_key = str(source)
+
     api_key = load_api_key(
         secret_file=args.secret_file,
         env_var=args.api_key_env,
         provider=args.credential_provider,
     )
-
-    state_path = (
-        args.state_file or _default_state_path(source)
-    ).expanduser().resolve()
-    previous = _load_state(state_path)
-    source_key = str(source)
 
     with WorkflowyClient(api_key=api_key, base_url=args.base_url) as client:
         previous = _reconcile_pending_state(client, state_path, previous)

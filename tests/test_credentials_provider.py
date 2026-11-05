@@ -11,6 +11,16 @@ from workflowy_importer.credentials import CredentialError, load_api_key
 
 class CredentialProviderTests(unittest.TestCase):
     def setUp(self):
+        environment = mock.patch.dict(os.environ, {
+            'WORKFLOWY_CREDENTIAL_PROVIDER': 'auto', 'CREDENTIALS_DIRECTORY': '',
+            'WORKFLOWY_API_KEY': '',
+        })
+        environment.start()
+        self.addCleanup(environment.stop)
+        external = mock.patch('workflowy_importer.credentials.subprocess.run',
+                              side_effect=AssertionError('live credential subprocess forbidden'))
+        external.start()
+        self.addCleanup(external.stop)
         configured = mock.patch("workflowy_importer.credentials._bitwarden_configured", return_value=False)
         self.configured = configured.start()
         self.addCleanup(configured.stop)
