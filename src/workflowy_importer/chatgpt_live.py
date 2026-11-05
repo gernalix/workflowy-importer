@@ -123,6 +123,18 @@ class ChatGPTCloudCollector:
         from playwright.sync_api import sync_playwright
 
         self._pw = sync_playwright().start()
+        try:
+            return self._connect()
+        except BaseException:
+            # A failed __enter__ never invokes __exit__. Release the driver
+            # even when the configured browser is unavailable.
+            try:
+                self.__exit__(None, None, None)
+            except Exception:
+                pass  # Keep the original connection/navigation failure.
+            raise
+
+    def _connect(self) -> "ChatGPTCloudCollector":
         self._browser = self._pw.chromium.connect_over_cdp(self.endpoint)
         contexts = self._browser.contexts
         context = contexts[0] if contexts else self._browser.new_context()
@@ -134,17 +146,26 @@ class ChatGPTCloudCollector:
         self._page = home_pages[-1] if home_pages else None
         if self._page is None:
             self._page = context.new_page()
-            self._page.goto(
-                "https://chatgpt.com/",
-                wait_until="domcontentloaded",
-                timeout=45_000,
-            )
+            try:
+                self._page.goto(
+                    "https://chatgpt.com/",
+                    wait_until="domcontentloaded",
+                    timeout=45_000,
+                )
+            except BaseException:
+                try:
+                    self._page.close()
+                except Exception:
+                    pass
+                raise
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        if self._pw is not None:
-            self._pw.stop()
-        self._pw = self._browser = self._page = None
+        try:
+            if self._pw is not None:
+                self._pw.stop()
+        finally:
+            self._pw = self._browser = self._page = None
 
     def _fetch_json(self, path: str) -> dict:
         if not path.startswith("/backend-api/"):
