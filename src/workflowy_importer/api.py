@@ -16,13 +16,17 @@ class WorkflowyAPIError(RuntimeError):
 
 @dataclass(slots=True)
 class WorkflowyClient:
-    api_key: str
+    api_key: str = field(repr=False)
     base_url: str = "https://workflowy.com/api/v1"
     max_retries: int = 5
     timeout: float = 30.0
     _client: httpx.Client = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.api_key, str) or not self.api_key or any(
+            ord(character) < 32 or ord(character) > 126 for character in self.api_key
+        ):
+            raise WorkflowyAPIError("Workflowy API credential has an invalid header format")
         self._client = httpx.Client(
             base_url=self.base_url.rstrip("/"),
             headers={
@@ -52,14 +56,12 @@ class WorkflowyClient:
         **kwargs,
     ) -> httpx.Response:
         attempts = self.max_retries + 1 if retry_safe or retry_rate_limited else 1
-        last_error: Exception | None = None
         for attempt in range(attempts):
             try:
                 response = self._client.request(
                     method, path, **kwargs
                 )
-            except httpx.RequestError as exc:
-                last_error = exc
+            except httpx.RequestError:
                 if not retry_safe or attempt + 1 >= attempts:
                     break
                 time.sleep(min(2**attempt, 8))
@@ -94,17 +96,12 @@ class WorkflowyClient:
 
             if response.is_error:
                 raise WorkflowyAPIError(
-                    f"{method} {path} failed: "
-                    f"HTTP {response.status_code}: "
-                    f"{response.text[:500]}",
+                    f"Workflowy API {method} failed: HTTP {response.status_code}",
                     status_code=response.status_code,
                 )
             return response
 
-        raise WorkflowyAPIError(
-            f"{method} {path} failed: "
-            f"{last_error or 'request failed before a response'}"
-        )
+        raise WorkflowyAPIError("Workflowy API transport failed") from None
 
     def create_node(
         self,

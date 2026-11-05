@@ -13,7 +13,7 @@ Requires Python 3.11+. This Fedora setup uses the global Python environment; pro
 ```bash
 git clone https://github.com/gernalix/workflowy-importer.git
 cd workflowy-importer
-sudo dnf install python3-httpx python3-markdown-it-py
+sudo dnf install python3-httpx python3-markdown-it-py python3-cryptography
 export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
 python3 -m workflowy_importer.bridge_cli --help
 ```
@@ -89,6 +89,18 @@ workflowy-import-md ~/Documents/my-vault \
 - Interrupted initial/replacement imports are journaled and reconciled on the next run.
 - Read-only API calls may retry transient errors; mutations are not blindly replayed after ambiguous network failures.
 - Ambiguous internal links are never guessed.
+
+Default import journals live outside the Markdown source in the private directory
+`~/.local/state/workflowy-importer/imports/`, keyed by the canonical source path.
+Source folders and downloaded archives cannot supply authoritative recovery state.
+If only an old adjacent `.workflowy-importer-state.json` (or file sidecar) exists,
+the importer stops before credential access or remote operations. Preserve that
+journal and review its provenance and node IDs before moving it to the reported
+private path or explicitly selecting it with `--state-file`. Never discard a
+journal and start over merely to bypass this guard: that can duplicate imports.
+An explicit `--state-file` is a trusted recovery capability, including permission
+to delete nodes listed in pending cleanup records. A valid private journal takes
+precedence over adjacent source files, which remain untouched.
 
 The importer intentionally uses transactional whole-root replacement rather than risky in-place mutation. Machine-side incremental behavior is provided by the cache/event bridge; Markdown source refresh remains explicit with `--replace`.
 
@@ -212,9 +224,32 @@ Run:
 wf serve
 ```
 
-Then load `browser-extension/` as an unpacked Chromium extension and click its action while the desired ChatGPT conversation is open.
+Before deploying the authenticated capture adapter, configure a **dedicated**
+`WORKFLOWY_CAPTURE_TOKEN` in the existing Fedora Bitwarden runtime reference
+`FEDORA_WORKFLOWY_ENV`. Use a random key with at least 256 bits of entropy,
+encoded as 43–128 base64url characters; never reuse the Workflowy API key.
+The adapter retrieves only this field through `bws-credential`, with no legacy
+or inherited-environment fallback. Missing/invalid pairing configuration prevents
+the listener from starting. This source change does not create a vault entry,
+install dependencies, restart the current bridge or migrate existing clients.
 
-The extension only reads that open conversation and posts it to `127.0.0.1`. It never receives the Workflowy API key; the local bridge performs the authenticated write.
+Load `browser-extension/` in Chrome/Chromium 106+, open its options and enter the
+dedicated capture pairing key from Bitwarden. It is held only in trusted extension
+session storage; pair again after a browser restart or extension reload. Then click
+the action while the desired ChatGPT conversation is open.
+
+The extension authenticates the fixed loopback bridge before reading that open
+conversation, then sends an authenticated, encrypted capture. Neither the pairing
+key nor plaintext conversation travels in the HTTP request. The extension never
+receives the Workflowy API key; the local bridge performs the authenticated write.
+The content script and web page never receive either key. Other HTTP clients must
+implement the same capture protocol; unauthenticated JSON POSTs are rejected.
+The direct `wf inbox` and other CLI commands retain their existing credential flow.
+
+Pairing-key rotation requires a separately authorized bridge restart and new
+browser pairing. A failed capture may have already written remote nodes; check
+the destination before trying again. There is no automatic mutation retry.
+See [the capture protocol](browser-extension/CAPTURE_PROTOCOL.md) for the wire contract.
 
 The account-export route remains the stable fallback if ChatGPT changes its web DOM.
 
@@ -387,6 +422,9 @@ python -m unittest discover -s tests -v
 ```
 
 CI runs the suite on Python 3.11 and 3.13.
+Offline tests also require Node.js 22+ for real WebCrypto/Python interoperability
+and fake Chrome worker/options tests. They use synthetic keys and fake HTTP/API
+clients, never a real browser profile, vault or Workflowy account.
 
 ## Project release number
 

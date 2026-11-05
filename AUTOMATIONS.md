@@ -16,7 +16,10 @@ Use one canonical runtime: the ThinkPad/Fedora workstation.
 
 - API credentials: configure `FEDORA_WORKFLOWY_ENV` through the appropriate Bitwarden Secrets Manager runtime. Configured automatic mode uses the vault exclusively and fails closed; see README.md for the actual resolver order.
 - Existing native Secret Service, systemd credentials, ephemeral environment and protected-file providers are compatibility paths only when no vault reference is configured; they are not fallback after a vault failure. New operational setup uses Bitwarden from the start.
-- The localhost capture server binds only to loopback and accepts browser POSTs only from extension origins.
+- The localhost capture server binds only to loopback. Captures require a dedicated
+  Bitwarden pairing key, an authenticated single-use challenge and an encrypted
+  body; extension Origin checks remain an additional browser defense. Raw API keys
+  and pairing keys never cross the local HTTP interface.
 - Destructive/bulk actions are report-only unless `--apply` is explicitly supplied.
 - Ambiguous PersonalHub/name matches are skipped.
 - Routing falls back to Inbox instead of guessing.
