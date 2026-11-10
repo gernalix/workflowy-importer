@@ -35,7 +35,7 @@ from .chatgpt_live import (
     sync_chatgpt_dashboard,
     upsert_records,
 )
-from .credentials import CredentialError, DEFAULT_SECRET_FILE, load_api_key
+from .credentials import CredentialError, DEFAULT_SECRET_FILE, load_api_key, load_capture_token
 from .control import run_control_actions
 from .links import workflowy_url
 from .bridge_arguments import DEFAULT_CACHE, DEFAULT_RULES, build_parser
@@ -733,6 +733,7 @@ def run(args: argparse.Namespace) -> int:
                 return serve(
                     client,
                     db,
+                    capture_token=load_capture_token(),
                     host=args.host,
                     port=args.port,
                     rules_path=args.rules,

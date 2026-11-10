@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Pair Workflowy capture</title>
+<h1>Pair Workflowy capture</h1>
+<p>Enter the dedicated capture pairing key from Bitwarden. Use the same
+WORKFLOWY_CAPTURE_TOKEN configured for the local bridge, never the Workflowy API key.</p>
+<p>Pairing lasts for this browser session. Pair again after restarting the browser
+or reloading the extension. The key is never sent to the web page or bridge.</p>
+<form id="pairing">
+  <label for="token">Capture pairing key</label>
+  <input id="token" type="password" autocomplete="off" spellcheck="false" required>
+  <button type="submit">Pair for this session</button>
+  <button id="forget" type="button">Forget pairing</button>
+</form>
+<p id="status" role="status"></p>
+<script src="capture-protocol.js"></script>
+<script src="options.js"></script>
+</html>

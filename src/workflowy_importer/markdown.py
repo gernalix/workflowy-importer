@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import html
 import posixpath
 import re
 from dataclasses import dataclass
@@ -10,6 +9,7 @@ from typing import Callable, Iterable
 from urllib.parse import unquote
 
 from markdown_it import MarkdownIt
+from markdown_it.rules_inline.image import image as parse_image
 
 from .model import ImportNode
 
@@ -26,6 +26,46 @@ _IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 
 _MD = MarkdownIt("commonmark", {"html": False, "linkify": False})
 _MD.enable("strikethrough")
+
+
+def _literal_image(state, silent: bool) -> bool:
+    start = state.pos
+    if not parse_image(state, True):
+        state.pos = start
+        match = _IMAGE_RE.match(state.src, start, state.posMax)
+        if not match:
+            return False
+        state.pos = match.end()
+    if not silent:
+        # Preserve the source span as a text token, never as markup substituted
+        # into an already-rendered HTML attribute or another token's content.
+        token = state.push("text", "", 0)
+        token.content = state.src[start:state.pos]
+    return True
+
+
+def _wiki_link(state, silent: bool) -> bool:
+    if silent or state.linkLevel or not state.src.startswith("[[", state.pos):
+        return False
+    match = _WIKI_RE.match(state.src, state.pos, state.posMax)
+    resolver = state.env.get("workflowy_resolver")
+    if not match or not resolver:
+        return False
+    target, separator, label = match.group(1).partition("|")
+    href = resolver(target.strip())
+    href = state.md.normalizeLink(href) if href else None
+    if not href or not state.md.validateLink(href):
+        return False
+    if not silent:
+        state.push("link_open", "a", 1).attrSet("href", href)
+        state.push("text", "", 0).content = (label if separator else target).strip()
+        state.push("link_close", "a", -1)
+    state.pos = match.end()
+    return True
+
+
+_MD.inline.ruler.at("image", _literal_image)
+_MD.inline.ruler.before("link", "workflowy_wiki", _wiki_link)
 
 
 @dataclass(slots=True)
@@ -381,48 +421,21 @@ def render_inline(
     text: str,
     resolve_target: Callable[[str], str | None] | None = None,
 ) -> str:
-    placeholders: dict[str, str] = {}
-
-    def protect_image(match: re.Match[str]) -> str:
-        token = f"WFYIMGTOKEN{len(placeholders):06d}"
-        placeholders[token] = html.escape(match.group(0), quote=False)
-        return token
-
-    work = _IMAGE_RE.sub(protect_image, text)
-
-    def wiki(match: re.Match[str]) -> str:
-        inner = match.group(1)
-        target, sep, label = inner.partition("|")
-        target = target.strip()
-        display = (label if sep else target).strip()
-        href = resolve_target(target) if resolve_target else None
-        if not href:
-            return match.group(0)
-        token = f"WFYLINKTOKEN{len(placeholders):06d}"
-        placeholders[token] = (
-            f'<a href="{html.escape(href, quote=True)}">{html.escape(display)}</a>'
-        )
-        return token
-
-    work = _WIKI_RE.sub(wiki, work)
-
+    environment = {"workflowy_resolver": resolve_target}
+    tokens = _MD.parseInline(text, environment)
     if resolve_target:
-
-        def md_link(match: re.Match[str]) -> str:
-            label, target = match.group(1), match.group(2)
-            target_lower = target.lower()
-            if not (
-                target.startswith("#")
-                or target_lower.endswith(".md")
-                or ".md#" in target_lower
-            ):
-                return match.group(0)
-            href = resolve_target(target)
-            return f"[{label}]({href})" if href else match.group(0)
-
-        work = _MD_LINK_RE.sub(md_link, work)
-
-    rendered = _MD.renderInline(work).strip()
+        for block in tokens:
+            for token in block.children or []:
+                if token.type != "link_open":
+                    continue
+                target = token.attrGet("href") or ""
+                lower = target.lower()
+                if target.startswith("#") or lower.endswith(".md") or ".md#" in lower:
+                    href = resolve_target(target)
+                    href = _MD.normalizeLink(href) if href else None
+                    if href and _MD.validateLink(href):
+                        token.attrSet("href", href)
+    rendered = _MD.renderer.render(tokens, _MD.options, environment).strip()
     rendered = (
         rendered.replace("<strong>", "<b>")
         .replace("</strong>", "</b>")
@@ -431,8 +444,6 @@ def render_inline(
         .replace("<del>", "<s>")
         .replace("</del>", "</s>")
     )
-    for token, replacement in placeholders.items():
-        rendered = rendered.replace(token, replacement)
     return rendered
 
 

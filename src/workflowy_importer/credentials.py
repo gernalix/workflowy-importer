@@ -32,17 +32,17 @@ def _bitwarden_configured() -> bool:
         raise CredentialError("Bitwarden reference configuration is invalid") from exc
 
 
-def _bitwarden_credential() -> str:
+def _bitwarden_field(field: str) -> str:
     # The existing host runtime validates the project, strips its machine token,
     # and injects only this field. Child output stays in this private pipe.
     runtime = Path.home() / ".local/bin/bws-credential"
     environment = dict(os.environ)
-    for name in ("BWS_ACCESS_TOKEN", "WORKFLOWY_API_KEY", "RUST_LOG", "RUST_BACKTRACE"):
+    for name in ("BWS_ACCESS_TOKEN", "WORKFLOWY_API_KEY", "WORKFLOWY_CAPTURE_TOKEN", "RUST_LOG", "RUST_BACKTRACE"):
         environment.pop(name, None)
     try:
         result = subprocess.run(
-            [str(runtime), "--ref", "FEDORA_WORKFLOWY_ENV", "--var", "WORKFLOWY_API_KEY", "--",
-             sys.executable, "-c", "import os,sys;sys.stdout.write(os.environ['WORKFLOWY_API_KEY'])"],
+            [str(runtime), "--ref", "FEDORA_WORKFLOWY_ENV", "--var", field, "--",
+             sys.executable, "-c", "import os,sys;sys.stdout.write(os.environ[sys.argv[1]])", field],
             capture_output=True, text=True, env=environment, timeout=55, check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -50,6 +50,19 @@ def _bitwarden_credential() -> str:
     if result.returncode:
         raise CredentialError("Bitwarden Workflowy credential retrieval failed")
     return _nonempty(result.stdout, "Bitwarden")
+
+
+def _bitwarden_credential() -> str:
+    return _bitwarden_field("WORKFLOWY_API_KEY")
+
+
+def load_capture_token() -> str:
+    """Dedicated capture pairing key: vault only, with no legacy fallback."""
+    from .capture_auth import TOKEN_PATTERN
+    value = _bitwarden_field("WORKFLOWY_CAPTURE_TOKEN")
+    if not TOKEN_PATTERN.fullmatch(value):
+        raise CredentialError("Bitwarden capture pairing key has an invalid format")
+    return value
 
 
 def _nonempty(value: str, source: str) -> str:
