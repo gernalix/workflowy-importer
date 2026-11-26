@@ -17,7 +17,7 @@ repository:
 architecture:
   summary: Markdown/model/links handle conversion; api and credentials own remote
     access; cache stores nodes, snapshots, mappings and events; bridge_cli/bridge_arguments
-    compose workflows; chatgpt_records and chatgpt_storage separate parsing from persistence.
+    compose workflows.
     Default import journals live in private owner state outside source; legacy
     source sidecars require explicit trust. capture_auth owns single-use authenticated
     encrypted capture; credentials retrieves its dedicated vault field; the extension
@@ -39,8 +39,6 @@ dependencies:
   purpose: Official Workflowy API HTTP client.
 - name: markdown-it-py
   purpose: Markdown parsing.
-- name: Playwright
-  purpose: Separately authorized browser capture; not used by offline verification.
 - name: Fedora Bitwarden runtime
   purpose: Configured vault credential provider; no legacy fallback after a configured
     vault failure.
@@ -50,8 +48,8 @@ dependencies:
 - name: Node.js 22+
   purpose: Offline real-WebCrypto interoperability and fake extension handler tests.
 data:
-  schema: cache.py owns SQLite nodes, snapshots, mappings and events; chatgpt_storage.py
-    owns capture schema and upserts. Native source files and remote Workflowy data
+  schema: cache.py owns SQLite nodes, snapshots, mappings and events.
+    Native source files and remote Workflowy data
     remain with their owners. See README.md for journals and replacement behavior.
   migrations: Use owning SQLite schema/writers with consistent backup; preserve import
     journals and do not blindly replay uncertain remote mutations.
@@ -60,12 +58,10 @@ runtime:
   - workflowy-backup.service (template; installation not attested)
   - workflowy-bridge.service (template; installation not attested)
   - workflowy-cache-sync.service (template; installation not attested)
-  - workflowy-chatgpt-live.service (template; installation not attested)
   - workflowy-weekly-review.service (template; installation not attested)
   timers:
   - workflowy-backup.timer (template; installation not attested)
   - workflowy-cache-sync.timer (template; installation not attested)
-  - workflowy-chatgpt-live.timer (template; installation not attested)
   - workflowy-weekly-review.timer (template; installation not attested)
   containers: []
 devices: []

@@ -12,7 +12,6 @@ UNIT_SOURCE = ROOT / "deploy" / "systemd"
 UNITS = tuple(sorted(path.name for path in UNIT_SOURCE.iterdir() if path.suffix in {".service", ".timer", ".path"}))
 CORE_UNITS = (
     "workflowy-bridge.service",
-    "workflowy-chatgpt-live.timer",
 )
 
 
@@ -41,7 +40,7 @@ def main() -> int:
         checked("systemctl", "--user", "enable", "--now", unit)
 
     # The long-lived bridge must reload Python code from the freshly updated
-    # checkout; personal capture and ChatGPT mirroring remain independent of C3.
+    # checkout so the personal capture service uses the deployed version.
     checked("systemctl", "--user", "restart", "workflowy-bridge.service")
     print("Workflowy personal runtime deployed; capture bridge restarted.")
     return 0

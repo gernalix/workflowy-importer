@@ -9,7 +9,6 @@ import argparse
 from datetime import date
 from pathlib import Path
 
-from .chatgpt_live import DEFAULT_CDP_ENDPOINT, DEFAULT_INVENTORY
 from .credentials import DEFAULT_SECRET_FILE
 
 
@@ -131,20 +130,6 @@ def build_parser() -> argparse.ArgumentParser:
     selector.add_argument("--conversation-id")
     selector.add_argument("--title")
     chat.add_argument("--parent", default="inbox")
-
-    live = sub.add_parser(
-        "chatgpt-live-sync",
-        help="Track account-wide ChatGPT chats and project them into Workflowy",
-    )
-    live.add_argument("--parent", default="inbox")
-    live.add_argument("--cdp-endpoint", default=DEFAULT_CDP_ENDPOINT)
-    live.add_argument("--inventory", type=Path, default=DEFAULT_INVENTORY)
-    live.add_argument("--recent-minutes", type=float, default=15.0)
-    live.add_argument("--running-ttl-minutes", type=float, default=5.0)
-    live.add_argument("--full-sweep-hours", type=float, default=24.0)
-    live.add_argument("--detail-limit", type=int, default=2)
-    live.add_argument("--max-writes", type=int, default=20)
-    live.add_argument("--timezone", default="Europe/Copenhagen")
 
     projects = sub.add_parser(
         "projects", help="Create an index of local Git projects"

@@ -1,9 +1,8 @@
 # workflowy-importer
 
 Read project-capsule.yaml, README.md and AUTOMATIONS.md. Keep Markdown/model/link
-conversion, API/credential access, cache/event persistence, CLI argument parsing
-and ChatGPT record/storage modules separate. Reuse existing clients and storage
-writers; never replay an ambiguous remote mutation or guess an internal link.
+conversion, API/credential access, cache/event persistence and CLI argument parsing
+separate. Reuse existing clients and storage writers; never replay an ambiguous remote mutation or guess an internal link.
 
 Fedora owns the runtime. Use global Python, isolated task worktrees and the
 installed Git writer. Offline tests use PYTHONPATH=src and fake clients. Do not

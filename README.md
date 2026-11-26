@@ -253,36 +253,6 @@ See [the capture protocol](browser-extension/CAPTURE_PROTOCOL.md) for the wire c
 
 The account-export route remains the stable fallback if ChatGPT changes its web DOM.
 
-### Account-wide live chat dashboard
-
-`wf chatgpt-live-sync` maintains a Workflowy dashboard for persisted ChatGPT
-conversations synced to the signed-in account. It tracks chats regardless of
-whether they were created on web, desktop, or mobile; device origin is
-deliberately not stored.
-
-The collector reuses the authenticated local ChatGPT CDP browser at
-`127.0.0.1:9333` and optionally reads the existing legacy URL inventory at
-`~/.local/state/chatgpt-rdc-supervisor/chats.json`. That file is a read-only
-compatibility input; a missing or invalid inventory is treated as empty. The
-collector does not launch or require the retired supervisor or its lifecycle. No ChatGPT cookie or access token is written to
-this repository or to the Workflowy cache. Workflowy receives only title,
-chat URL, creation time, last-interaction time, and `RUNNING/RECENT/IDLE`.
-
-Connection failures release the Playwright driver even if entering the collector
-fails. If navigation fails, only the new page created by that attempt is closed;
-existing user pages and the browser remain open. A missing CDP browser still
-produces a failed sync rather than a successful empty result.
-
-A user timer runs the sync roughly every 90 seconds. It performs bounded
-recent-metadata reads, a much rarer full sweep, backs off after HTTP 429, and
-only writes Workflowy nodes that changed. Temporary/non-persisted ChatGPT
-chats are not account-syncable and therefore cannot be discovered this way.
-
-The ChatGPT metadata endpoints used here are private web-app endpoints rather
-than a supported public API. The collector is isolated behind one module so
-endpoint changes can be repaired without changing the SQLite or Workflowy
-projection contract.
-
 ## PersonalHub deep links
 
 Workflowy node IDs can be converted to stable Workflowy URLs. The tool can therefore enrich a selected table/column of a local PersonalHub SQLite database.

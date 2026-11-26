@@ -102,4 +102,4 @@ Then load `browser-extension/` as an unpacked Chromium extension and click it on
 
 They are templates only until installed/enabled on the target Fedora account.
 
-For the canonical Fedora runtime, `python3 deploy_runtime.py` copies changed user units, enables the personal bridge and ChatGPT-live timer, and restarts the long-lived bridge. It neither enables nor triggers retired roadmap/C3 controls. `github-autosync` owns this existing opt-in post-sync deploy contract; source validation must not invoke the helper or infer live acceptance from a merge.
+For the canonical Fedora runtime, `python3 deploy_runtime.py` copies changed user units, enables the personal bridge, and restarts the long-lived bridge. It neither enables nor triggers retired roadmap/C3 controls. `github-autosync` owns this existing opt-in post-sync deploy contract; source validation must not invoke the helper or infer live acceptance from a merge.
