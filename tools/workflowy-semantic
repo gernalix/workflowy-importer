@@ -1,0 +1,73 @@
+#!/usr/bin/bash
+set -euo pipefail
+umask 077
+
+tools_dir=$(cd -- "$(dirname -- "$0")" && pwd -P)
+runtime="$HOME/.local/share/workflowy-importer/semantic"
+packages="$runtime/packages"
+lock="$runtime/.dependency-update.lock"
+base="$HOME/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu"
+python="$base/bin/python3.12"
+
+if [[ ! -x $python || -e $base/pyvenv.cfg ]]; then
+    echo 'The semantic tool requires the installed CPython 3.12 base interpreter.' >&2
+    exit 1
+fi
+if [[ -L $runtime || -L $packages || -L $lock || -e $packages/pyvenv.cfg ]]; then
+    echo 'Invalid Workflowy semantic package location.' >&2
+    exit 1
+fi
+
+probe='
+import json
+import sys
+from importlib.metadata import version
+import numpy
+import onnxruntime
+from tokenizers import Tokenizer
+from tokenizers.models import WordLevel
+assert sys.prefix == sys.base_prefix
+assert "CPUExecutionProvider" in onnxruntime.get_available_providers()
+tokenizer = Tokenizer(WordLevel({"[UNK]": 0, "sample": 1}, unk_token="[UNK]"))
+assert tokenizer.encode("sample").ids == [1]
+print(json.dumps({name: version(name) for name in ("numpy", "onnxruntime", "tokenizers")}))
+'
+
+if [[ ${1-} == --install-packages && $# == 1 ]]; then
+    install -d -m 700 "$runtime"
+    exec 8<>"$lock"
+    flock --exclusive --nonblock --conflict-exit-code 75 8
+    stage=$(mktemp -d "$runtime/.install.XXXXXXXX")
+    trap 'rm -rf -- "$stage"' EXIT
+    /usr/bin/env -i PATH=/usr/bin:/bin HOME="$stage" UV_LINK_MODE=copy \
+        /usr/bin/uv --no-config --no-cache pip install --python "$python" \
+        --index-url https://pypi.org/simple --only-binary :all: \
+        --target "$stage/packages" -r "$tools_dir/workflowy-semantic-requirements.txt"
+    chmod 700 "$stage/packages"
+    /usr/bin/bwrap --die-with-parent --unshare-net --unshare-pid --ro-bind / / \
+        --tmpfs /home --tmpfs /run --tmpfs /tmp --tmpfs /mnt --tmpfs /media --tmpfs /var/lib \
+        --proc /proc --dev /dev --ro-bind "$base" /tmp/python \
+        --ro-bind "$stage/packages" /tmp/packages --chdir /tmp --clearenv \
+        --setenv PATH /usr/bin:/bin --setenv HOME /tmp --setenv PYTHONPATH /tmp/packages \
+        /tmp/python/bin/python3.12 -S -P -B -c "$probe"
+    if [[ -d $packages ]]; then
+        previous=$(mktemp -d "$runtime/.previous.XXXXXXXX")
+        mv -T -- "$stage/packages" "$previous/packages"
+        mv -T --exchange --no-copy "$previous/packages" "$packages"
+    else
+        mv -T -- "$stage/packages" "$packages"
+    fi
+    exit 0
+fi
+
+if [[ ! -d $packages || ! -f $lock || ! -O $packages || ! -O $lock ]]; then
+    echo 'Install the flat packages with tools/workflowy-semantic --install-packages.' >&2
+    exit 1
+fi
+if [[ ${1-} == --check-runtime && $# == 1 ]]; then
+    set -- -c "$probe"
+else
+    set -- "$tools_dir/workflowy_semantic_discover.py" "$@"
+fi
+exec /usr/bin/flock --shared --no-fork "$lock" /usr/bin/env \
+    -u PYTHONHOME PYTHONPATH="$packages" "$python" -S -P -B "$@"

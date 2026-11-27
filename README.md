@@ -169,6 +169,13 @@ in the workstation cache. It only emits a private candidate report, **never writ
 any Workflowy nodes**, and its similarity scores are not considered authorization
 to create links. Human-reviewed ID pairs and concrete rationales are required.
 
+Run `tools/workflowy-semantic --install-packages` to provision the optional
+runtime, then use `tools/workflowy-semantic` with the discovery script's
+arguments. It uses an installed CPython 3.12 interpreter and a flat package
+directory shared with FEU. `--check-runtime` checks the loaded library versions
+and a synthetic token without opening an export or a model. The installed
+Workflowy commands use their regular Fedora runtime.
+
 `tools/workflowy_semantic_round2_plan.py` compares the verified original backup,
 the previous local edit plan and those explicitly curated pairs. It prepares note-
 only changes: reciprocal HTML links, plus removal of **only** lexical topic tags
